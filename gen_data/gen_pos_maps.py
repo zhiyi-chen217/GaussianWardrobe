@@ -1,4 +1,6 @@
 import os
+from copyreg import pickle
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -55,7 +57,7 @@ def get_faces(pixel_idx, mask):
         for y in range(img_w):
             if mask[x, y]:
                 cur_valid_face = find_face(pixel_idx, mask, x, y)
-                valid_faces.append(cur_valid_face)
+                valid_faces += cur_valid_face
                 with_face.append(len(cur_valid_face) > 0)
     return np.array(valid_faces), np.array(with_face)
 
@@ -117,8 +119,9 @@ if __name__ == '__main__':
 
     arg_parser = ArgumentParser()
     arg_parser.add_argument('-c', '--config_path', type = str, help = 'Configuration file path.')
-    arg_parser.add_argument('-o', '--output_path', type=str, help='Configuration file path.')
-    arg_parser.add_argument('-t', '--template_path', type=str, help='Configuration file path.')
+    arg_parser.add_argument('-o', '--output_path', type=str, help='Configuration output path.')
+    arg_parser.add_argument('-t', '--template_path', type=str, help='Configuration template path.')
+    arg_parser.add_argument('-rc', '--render_color', default=False, help='Render color or not.')
     args = arg_parser.parse_args()
 
     opt = yaml.load(open(args.config_path, encoding = 'UTF-8'), Loader = yaml.FullLoader)
@@ -152,6 +155,7 @@ if __name__ == '__main__':
         template = trimesh.load(data_dir + f'/{args.template_path}.ply', process = False)
         using_template = True
     else:
+        import pickle
         print(f'# Cannot find {args.template_path}.ply from {data_dir}, using SMPL-X as template')
         template = trimesh.Trimesh(cano_smpl_v, smpl_faces, process = False)
         using_template = False
@@ -160,7 +164,7 @@ if __name__ == '__main__':
     smpl_faces = template.faces.astype(np.int64)
     cano_smpl_v_dup = cano_smpl_v[smpl_faces.reshape(-1)]
     cano_smpl_n_dup = template.vertex_normals.astype(np.float32)[smpl_faces.reshape(-1)]
-    cano_smpl_t_dup = template.visual.vertex_colors.astype(np.float32)[smpl_faces.reshape(-1)][:, :3] / 255
+    cano_smpl_c_dup = template.visual.vertex_colors.astype(np.float32)[smpl_faces.reshape(-1)][:, :3] / 255
 
     # define front & back view matrices
     front_mv = np.identity(4, np.float32)
@@ -172,6 +176,24 @@ if __name__ == '__main__':
     back_mv[:3, :3] = rot_y
     back_mv[:3, 3] = -rot_y @ cano_center + np.array([0, 0, -10], np.float32)
     back_mv[1:3] *= -1
+
+    # render hand mask
+    if args.render_color:
+
+        cano_renderer.set_model(cano_smpl_v_dup, cano_smpl_c_dup)
+        cano_renderer.set_camera(front_mv)
+        front_cano_pos_map, front_cano_pix_to_face = cano_renderer.render()
+        front_cano_pos_map = front_cano_pos_map[:, :, :3]
+
+        cano_renderer.set_camera(back_mv)
+        back_cano_pos_map, back_cano_pix_to_face = cano_renderer.render()
+        back_cano_pos_map = back_cano_pos_map[:, :, :3]
+        back_cano_pos_map = cv.flip(back_cano_pos_map, 1)
+        back_cano_pix_to_face = cv.flip(back_cano_pix_to_face, 1)
+
+        cano_pos_map = np.concatenate([front_cano_pos_map, back_cano_pos_map], 1)
+        cv.imwrite(data_dir + f'/{args.output_path}/cano_smpl_hand_map.exr', cano_pos_map)
+
 
     # render canonical smpl position maps
     cano_renderer.set_model(cano_smpl_v_dup, cano_smpl_v_dup)
@@ -188,20 +210,23 @@ if __name__ == '__main__':
     cano_pos_map = np.concatenate([front_cano_pos_map, back_cano_pos_map], 1)
     cv.imwrite(data_dir + f'/{args.output_path}/cano_smpl_pos_map.exr', cano_pos_map)
     # Generate neighbor idx and neighbor weights
+
     cano_pix_to_face_map = np.concatenate([front_cano_pix_to_face, back_cano_pix_to_face], 1)
     cano_smpl_mask = torch.linalg.norm(torch.from_numpy(cano_pos_map).to(torch.float32), dim=-1) > 0.
     pixel_idx = np.full(cano_pix_to_face_map.shape, -1, dtype=np.int64)
     pixel_idx[cano_smpl_mask] = np.arange(cano_smpl_mask.sum())
-    neighbor_idxs, neighbor_weights, with_neighbor = get_neighbors(pixel_idx, cano_smpl_mask, cano_pix_to_face_map, template)
-    # save as npy file and use later
-    with open(data_dir + f'/{args.output_path}/neighbor_idx.npy', 'wb') as f:
-        np.save(f, neighbor_idxs)
-    with open(data_dir + f'/{args.output_path}/neighbor_weights.npy', 'wb') as f:
-        np.save(f, neighbor_weights)
-    with open(data_dir + f'/{args.output_path}/with_neighbor.npy', 'wb') as f:
-        np.save(f, with_neighbor)
+    # print("Generate neighbor map")
+    # neighbor_idxs, neighbor_weights, with_neighbor = get_neighbors(pixel_idx, cano_smpl_mask, cano_pix_to_face_map, template)
+    # # save as npy file and use later
+    # with open(data_dir + f'/{args.output_path}/neighbor_idx.npy', 'wb') as f:
+    #     np.save(f, neighbor_idxs)
+    # with open(data_dir + f'/{args.output_path}/neighbor_weights.npy', 'wb') as f:
+    #     np.save(f, neighbor_weights)
+    # with open(data_dir + f'/{args.output_path}/with_neighbor.npy', 'wb') as f:
+    #     np.save(f, with_neighbor)
 
     # Generate mesh-like faces
+    print("Generate face map")
     valid_faces, with_face = get_faces(pixel_idx, cano_smpl_mask)
     with open(data_dir + f'/{args.output_path}/valid_faces.npy', 'wb') as f:
         np.save(f, valid_faces)
@@ -222,18 +247,6 @@ if __name__ == '__main__':
     cano_nml_map = np.concatenate([front_cano_nml_map, back_cano_nml_map], 1)
     cv.imwrite(data_dir + f'/{args.output_path}/cano_smpl_nml_map.exr', cano_nml_map)
 
-    #render canonical smpl tightness maps
-    # cano_renderer.set_model(cano_smpl_v_dup, cano_smpl_t_dup)
-    # cano_renderer.set_camera(front_mv)
-    # front_cano_t_map, _ = cano_renderer.render()
-    # front_cano_t_map = front_cano_t_map[:, :, :3]
-
-    # cano_renderer.set_camera(back_mv)
-    # back_cano_t_map, _ = cano_renderer.render()
-    # back_cano_t_map = back_cano_t_map[:, :, :3]
-    # back_cano_t_map = cv.flip(back_cano_t_map, 1)
-    # cano_t_map = np.concatenate([front_cano_t_map, back_cano_t_map], 1)
-    # cv.imwrite(data_dir + '/smpl_pos_map/cano_smpl_t_map.exr', cano_t_map)
 
     body_mask = np.linalg.norm(cano_pos_map, axis = -1) > 0.
     cano_pts = cano_pos_map[body_mask]

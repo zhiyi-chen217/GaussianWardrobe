@@ -30,10 +30,6 @@ class AvatarNet(nn.Module):
                 with_faces = np.load(config.opt['train']['data']['data_dir'] + '/{}/with_face.npy'
                                       .format(self.smpl_pos_map))
                 self.with_faces = torch.from_numpy(with_faces).to(torch.bool).to(config.device)
-                cano_smpl_hand_map = cv.imread(config.opt['train']['data']['data_dir'] + '/{}/cano_smpl_hand_map.exr'
-                                          .format(self.smpl_pos_map), cv.IMREAD_UNCHANGED)
-                self.cano_smpl_hand_map = torch.from_numpy(cano_smpl_hand_map).to(torch.float32).to(config.device)
-                self.cano_smpl_hand_mask = torch.linalg.norm(self.cano_smpl_hand_map , dim=-1) > 0.
 
         self.random_style = opt.get('random_style', False)
         self.with_viewdirs = opt.get('with_viewdirs', True)
@@ -45,6 +41,8 @@ class AvatarNet(nn.Module):
                                   .format(self.smpl_pos_map), cv.IMREAD_UNCHANGED)
         self.cano_smpl_map = torch.from_numpy(cano_smpl_map).to(torch.float32).to(config.device)
         self.cano_smpl_mask = torch.linalg.norm(self.cano_smpl_map, dim = -1) > 0.
+
+        
         if "tightness" in opt.get("offset_mode", "tightness"):
             cano_tightness_map = cv.imread(config.opt['train']['data']['data_dir']
                                            + '/{}/cano_smpl_t_map.exr'.format(self.smpl_pos_map),
@@ -73,6 +71,10 @@ class AvatarNet(nn.Module):
                 nn.LeakyReLU(0.2, inplace = True),
                 nn.Conv2d(64, 128, 4, 2, 1)
             )
+        self.selected_gaussian = None
+        self.original_rotations = None
+        self.original_scales = None
+
     def get_normal(self, gaussian_pos):
         gaussian_mesh = Meshes(gaussian_pos.unsqueeze(0), self.valid_faces.unsqueeze(0))
         # save_ply("/local/home/zhiychen/AnimatableGaussain/gaussian_mesh.ply", gaussian_pos, self.valid_faces)
@@ -194,6 +196,32 @@ class AvatarNet(nn.Module):
         })
         return live_pos_map
 
+    def select_gaussian(self, gaussian_vals):
+        # use surface opacity of covered body
+        surface_opacity = gaussian_vals["opacity"][self.selected_gaussian].detach().mean()
+        new_opacity = torch.zeros_like(gaussian_vals["opacity"]).to(config.device)
+        new_opacity[~self.selected_gaussian] = surface_opacity
+        new_opacity[self.selected_gaussian] = gaussian_vals["opacity"][self.selected_gaussian]
+        gaussian_vals["opacity"] = new_opacity
+
+        new_scales = torch.zeros_like(gaussian_vals["scales"]).to(config.device)
+        new_scales[~self.selected_gaussian] = self.original_scales[~self.selected_gaussian]
+        new_scales[self.selected_gaussian] = gaussian_vals["scales"][self.selected_gaussian]
+        gaussian_vals["scales"] = new_scales
+
+        new_offset = torch.zeros_like(gaussian_vals["offset"]).to(config.device)
+        new_offset[self.selected_gaussian] = gaussian_vals["offset"][self.selected_gaussian]
+        gaussian_vals["offset"] = new_offset
+        gaussian_vals["positions"] = new_offset + self.cano_gaussian_model.get_xyz
+
+        new_rotations = torch.zeros_like(gaussian_vals["rotations"]).to(config.device)
+        new_rotations[~self.selected_gaussian] = self.original_rotations[~self.selected_gaussian]
+        new_rotations[self.selected_gaussian] = gaussian_vals["rotations"][self.selected_gaussian]
+        gaussian_vals["rotations"] = new_rotations
+
+
+
+
     def render(self, items, bg_color = (0., 0., 0.), use_pca = False, use_vae = False, only_gaussian=False):
         """
         Note that no batch index in items.
@@ -209,6 +237,8 @@ class AvatarNet(nn.Module):
         if use_vae:
             pose_map = items['smpl_pos_map_vae'][:3]
 
+
+       
         cano_pts, pos_map = self.get_positions(pose_map, return_map = True)
         opacity, scales, rotations = self.get_others(pose_map)
         # if not self.training:
@@ -237,7 +267,7 @@ class AvatarNet(nn.Module):
             scales = w * self.hand_scales + (1.0 - w) * scales
             rotations = w * self.hand_rotations + (1.0 - w) * rotations
             # colors = w * self.hand_colors + (1.0 - w) * colors
-
+        # preparing gaussian values
         gaussian_vals = {
             'positions': cano_pts,
             'opacity': opacity,
@@ -249,15 +279,28 @@ class AvatarNet(nn.Module):
 
         nonrigid_offset = gaussian_vals['positions'] - self.cano_gaussian_model.get_xyz
         cano_gaussian_pos = gaussian_vals["positions"]
-        gaussian_vals = self.transform_cano2live(gaussian_vals, items)
+        gaussian_vals["offset"] = nonrigid_offset
+
         gaussian_vals["cano_positions"] = cano_gaussian_pos
         if self.layer == "body":
             gaussian_vals["gaussian_norm"] = self.get_normal(cano_gaussian_pos)
+
+        # store original scale and rotation after pretraining
+        if self.original_scales is None:
+            self.original_scales = gaussian_vals["scales"].detach()
+
+        if self.original_rotations is None:
+            self.original_rotations = gaussian_vals["rotations"].detach()
+
+
+        # select gaussian
+        if not (self.selected_gaussian is None):
+            self.select_gaussian(gaussian_vals)
+        # transform to deformed space
+        gaussian_vals = self.transform_cano2live(gaussian_vals, items)
         
         # In multilayer case we only use the gaussian_vals and render later
         if only_gaussian:
-            # Return positions in both posed and cano space
-            gaussian_vals["offset"] = nonrigid_offset
             return gaussian_vals
         
         render_ret = render3(

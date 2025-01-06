@@ -58,7 +58,6 @@ class MultiLAvatarNet(nn.Module):
         self.layers_nn = nn.ModuleDict()
         self.init_points = []
         self.lbs = []
-        self.smpl_pos_map = config.opt.get("smpl_pos_map", "smpl_pos_map") + "_smplx"
         for layer in layers:
             self.layers_nn[layer] = AvatarNet(opt, layer)
             self.init_points.append(self.layers_nn[layer].cano_smpl_map[self.layers_nn[layer].cano_smpl_mask])
@@ -72,6 +71,15 @@ class MultiLAvatarNet(nn.Module):
         self.upper_cloth_mask = self.layers_nn["cloth"].cano_smpl_mask & self.layers_nn["body"].cano_smpl_mask
         self.selected_cloth_gaussian = self.upper_cloth_mask[self.layers_nn["cloth"].cano_smpl_mask]
         self.cover = opt.get("cover", False)
+        cano_smpl_hand_map = cv.imread(config.opt['train']['data']['data_dir'] + '/smpl_pos_map_body/cano_smpl_hand_map.exr', cv.IMREAD_UNCHANGED)
+        cano_smpl_hand_map = torch.from_numpy(cano_smpl_hand_map).to(torch.float32).to(config.device)
+        cano_smpl_hand_mask = torch.linalg.norm(cano_smpl_hand_map , dim=-1) > 0.
+        
+        self.body_hand_idx = cano_smpl_hand_mask[self.layers_nn["body"].cano_smpl_mask]
+        self.original_body_cover_scales = None
+        self.original_body_cover_rotations = None
+        # set up select gaussian for body
+        # self.layers_nn["body"].selected_gaussian = self.selected_body_gaussian
 
     def transform_cano2live(self, gaussian_vals, lbs, items):
         pt_mats = torch.einsum('nj,jxy->nxy', lbs, items['cano2live_jnt_mats'])
@@ -108,6 +116,13 @@ class MultiLAvatarNet(nn.Module):
         gaussian_body_vals = self.layers_nn["body"].render(items, only_gaussian=True)
         gaussian_cloth_vals = self.layers_nn["cloth"].render(items, only_gaussian=True)
         gaussian_vals = {}
+
+        # use constant color for label image
+        body_color = torch.zeros_like(gaussian_body_vals["colors"]).to(config.device)
+        gaussian_body_vals["label_colors"] = body_color
+        cloth_color = torch.full_like(gaussian_cloth_vals["colors"], 1.0).to(config.device)
+        gaussian_cloth_vals["label_colors"] =  cloth_color
+
         if not self.cover:
             for key in gaussian_cloth_vals.keys():
                 if key == "max_sh_degree":
@@ -138,15 +153,48 @@ class MultiLAvatarNet(nn.Module):
         rgb_map = render_ret['render'].permute(1, 2, 0)
         mask_map = render_ret['mask'].permute(1, 2, 0)
 
+        # render again the label image
+        gaussian_vals["colors"] = gaussian_vals["label_colors"]
+        render_ret_label = render3(
+            gaussian_vals,
+            bg_color,
+            items['extr'],
+            items['intr'],
+            items['img_w'],
+            items['img_h']
+        )
+        label_rgb_map = render_ret_label['render'].permute(1, 2, 0)
+
+
+
+        gaussian_body_vals["body_colors"] = gaussian_body_vals["colors"]
+        gaussian_body_vals["colors"] = torch.full_like(gaussian_body_vals["colors"], 1.0).to(config.device)
+        
+        render_body_label = render3(
+            gaussian_body_vals,
+            torch.tensor([0., 0., 0.]).to(config.device),
+            items['extr'],
+            items['intr'],
+            items['img_w'],
+            items['img_h']
+        )
+        label_body_rgb_map = render_body_label['render'].permute(1, 2, 0)
+
+
         ret = {
             'rgb_map': rgb_map,
             'mask_map': mask_map,
             'offset': gaussian_vals["offset"],
             "gaussian_cloth_pos": gaussian_cloth_vals["cano_positions"][self.selected_cloth_gaussian],
             "gaussian_body_pos": gaussian_body_vals["cano_positions"],
-            "gaussian_body_norm": gaussian_body_vals["gaussian_norm"]
+            "gaussian_body_norm": gaussian_body_vals["gaussian_norm"],
+            "gaussian_body_hand_color":  gaussian_body_vals["body_colors"][self.body_hand_idx],
+            "gaussian_body_covered_color":  gaussian_body_vals["body_colors"][~self.selected_body_gaussian],
+            "label_rgb_map": label_rgb_map,
+            "label_body_rgb_map": label_body_rgb_map,
+            "body_surface_opacity": gaussian_body_vals["opacity"][self.selected_body_gaussian],
+            "body_covered_opacity": gaussian_body_vals["opacity"][~self.selected_body_gaussian],
         }
-
         return ret
 
 

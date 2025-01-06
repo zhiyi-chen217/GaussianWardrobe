@@ -28,6 +28,7 @@ import utils.net_util as net_util
 import utils.visualize_util as visualize_util
 from utils.renderer import Renderer
 from utils.net_util import to_cuda
+from utils.visualize_util import post_process_gs_render
 from utils.obj_io import save_mesh_as_ply
 from gaussians.obj_io import save_gaussians_as_ply
 
@@ -43,7 +44,7 @@ class AvatarTrainer:
         self.opt = opt
         self.patch_size = 512
         self.iter_idx = 0
-        self.iter_num = 800000
+        self.iter_num = 160000
         self.lr_init = float(self.opt['train'].get('lr_init', 5e-4))
 
         avatar_module = self.opt['model'].get('module', 'network.avatar')
@@ -176,6 +177,10 @@ class AvatarTrainer:
 
         return total_loss, batch_losses
 
+    def prepare_img(self, img, boundary_mask_img):
+        img = img.permute(2, 0, 1)
+        return img * boundary_mask_img[None] + (1. - boundary_mask_img[None]) * self.bg_color_cuda[:, None, None]
+
     def forward_one_pass(self, items):
         # forward_start = torch.cuda.Event(enable_timing = True)
         # forward_end = torch.cuda.Event(enable_timing = True)
@@ -203,19 +208,35 @@ class AvatarTrainer:
 
         # forward_start.record()
         render_output = self.avatar_net.render(items, self.bg_color)
-        image = render_output['rgb_map'].permute(2, 0, 1)
         
 
         # mask image & set bg color
         items['color_img'][~items['mask_img']] = self.bg_color_cuda
-        gt_image = items['color_img'].permute(2, 0, 1)
         mask_img = items['mask_img'].to(torch.float32)
         boundary_mask_img = 1. - items['boundary_mask_img'].to(torch.float32)
-        image = image * boundary_mask_img[None] + (1. - boundary_mask_img[None]) * self.bg_color_cuda[:, None, None]
-        gt_image = gt_image * boundary_mask_img[None] + (1. - boundary_mask_img[None]) * self.bg_color_cuda[:, None, None]
-        # cv.imshow('image', image.detach().permute(1, 2, 0).cpu().numpy())
-        # cv.imshow('gt_image', gt_image.permute(1, 2, 0).cpu().numpy())
-        # cv.waitKey(0)
+        image = self.prepare_img(render_output['rgb_map'], boundary_mask_img)
+        gt_image = self.prepare_img(items['color_img'], boundary_mask_img)
+
+        if self.loss_weight['consistent_label_body'] > 0.:
+            label_body_image = render_output['label_body_rgb_map']
+            gt_label_body_image = items['label_body_img']
+            consistent_label_body_loss = torch.abs(label_body_image - gt_label_body_image).mean()
+            total_loss += self.loss_weight['consistent_label_body'] * consistent_label_body_loss
+            batch_losses.update({
+                'consistent_label_body_loss': consistent_label_body_loss.item()
+            })
+            self.logger.log({'consistent_label_body_loss': consistent_label_body_loss.item()})
+
+        if self.loss_weight['consistent_label'] > 0.:
+            label_image = self.prepare_img(render_output['label_rgb_map'], boundary_mask_img)
+            items['label_img'][~items['mask_img']] = self.bg_color_cuda
+            gt_label_image = self.prepare_img(items['label_img'], boundary_mask_img)
+            consistent_label_loss = torch.abs(label_image - gt_label_image).mean()
+            total_loss += self.loss_weight['consistent_label'] * consistent_label_loss
+            batch_losses.update({
+                'consistent_label_loss': consistent_label_loss.item()
+            })
+            self.logger.log({'consistent_label_loss': consistent_label_loss.item()})
 
         if self.loss_weight['l1'] > 0.:
             l1_loss = torch.abs(image - gt_image).mean()
@@ -252,6 +273,7 @@ class AvatarTrainer:
                 'lpips_loss': lpips_loss.item()
             })
             self.logger.log({'lpips_loss': lpips_loss.item()})
+
 
         if self.loss_weight['offset'] > 0.:
             offset = render_output["offset"]
@@ -290,6 +312,15 @@ class AvatarTrainer:
                 'laplacian_loss': laplacian_loss.item()
             })
             self.logger.log({'laplacian_loss': laplacian_loss.item() })
+        
+        if self.loss_weight['consistent_body_color'] > 0. and self.epoch_idx >= 1 :
+            mean_hand_color = render_output["gaussian_body_hand_color"].detach().mean(dim=0)
+            consistent_body_color_loss = (render_output["gaussian_body_covered_color"] - mean_hand_color).abs().mean()
+            total_loss += self.loss_weight['consistent_body_color'] * consistent_body_color_loss
+            batch_losses.update({
+                'consistent_body_color_loss': consistent_body_color_loss.item()
+            })
+            self.logger.log({'consistent_body_color_loss': consistent_body_color_loss.item()})
 
         # forward_end.record()
 
@@ -488,6 +519,13 @@ class AvatarTrainer:
                 latest_folder = self.opt['train']['net_ckpt_dir'] + '/epoch_latest'
                 os.makedirs(latest_folder, exist_ok = True)
                 self.save_ckpt(latest_folder)
+    def log_image(self, tag, rgb_map, img_factor=1, gt_image=None):
+        rgb_map = post_process_gs_render(rgb_map)
+        if gt_image is not None:
+            gt_image = cv.resize(gt_image, (0, 0), fx = img_factor, fy = img_factor)
+            rgb_map = np.concatenate([rgb_map, gt_image], 1)
+        self.logger.log({tag: wandb.Image(rgb_map[:,:, ::-1])})
+        return rgb_map
 
     @torch.no_grad()
     def mini_test(self, pretraining = False, eval_cano_pts = False):
@@ -512,10 +550,6 @@ class AvatarTrainer:
         items = net_util.to_cuda(item, add_batch = False)
 
         gs_render = self.avatar_net.render(items, self.bg_color)
-        # gs_render = self.avatar_net.render_debug(items)
-        rgb_map = gs_render['rgb_map']
-        rgb_map.clip_(0., 1.)
-        rgb_map = (rgb_map.cpu().numpy() * 255).astype(np.uint8)
         
         # cv.imshow('rgb_map', rgb_map.cpu().numpy())
         # cv.waitKey(0)
@@ -524,11 +558,11 @@ class AvatarTrainer:
         else:
             output_dir = self.opt['train']['net_ckpt_dir'] + '/eval_pretrain/training'
         gt_image, mask_image = self.dataset.load_color_mask_images(pose_idx, view_idx)
-        if gt_image is not None:
-            gt_image = gt_image * np.repeat(np.expand_dims(mask_image, axis=2), 3, axis=2)
-            gt_image = cv.resize(gt_image, (0, 0), fx = img_factor, fy = img_factor)
-            rgb_map = np.concatenate([rgb_map, gt_image], 1)
-        self.logger.log({"train_rgb_1": wandb.Image(rgb_map[:,:, ::-1])})
+        rgb_map = self.log_image( "train_rgb_1", gs_render["rgb_map"], img_factor, gt_image)
+        # render body if multilayer
+        if self.opt['model'].get('network', 'AvatarNet') == "MultiLAvatarNet":
+            gs_body_render = self.avatar_net.render(items, bg_color = self.bg_color, layers=["body"])
+            self.log_image( "train_body_1", gs_body_render["rgb_map"], img_factor)
         os.makedirs(output_dir, exist_ok = True)
         cv.imwrite(output_dir + '/iter_%d.jpg' % self.iter_idx, rgb_map)
         if eval_cano_pts:
@@ -552,24 +586,24 @@ class AvatarTrainer:
         items = net_util.to_cuda(item, add_batch = False)
 
         gs_render = self.avatar_net.render(items, bg_color = self.bg_color)
-        # gs_render = self.avatar_net.render_debug(items)
-        rgb_map = gs_render['rgb_map']
-        rgb_map.clip_(0., 1.)
-        rgb_map = (rgb_map.cpu().numpy() * 255).astype(np.uint8)
-        # cv.imshow('rgb_map', rgb_map.cpu().numpy())
-        # cv.waitKey(0)
+        
         if not pretraining:
             output_dir = self.opt['train']['net_ckpt_dir'] + '/eval/testing'
         else:
             output_dir = self.opt['train']['net_ckpt_dir'] + '/eval_pretrain/testing'
         gt_image, mask_image = self.dataset.load_color_mask_images(pose_idx, view_idx)
-        if gt_image is not None:
-            gt_image = gt_image * np.repeat(np.expand_dims(mask_image, axis=2), 3, axis=2)
-            gt_image = cv.resize(gt_image, (0, 0), fx = img_factor, fy = img_factor)
-            rgb_map = np.concatenate([rgb_map, gt_image], 1)
-        self.logger.log({"train_rgb_2": wandb.Image(rgb_map[:,:, ::-1])})
+        rgb_map = self.log_image( "train_rgb_2", gs_render["rgb_map"], img_factor, gt_image)
         os.makedirs(output_dir, exist_ok = True)
         cv.imwrite(output_dir + '/iter_%d.jpg' % self.iter_idx, rgb_map)
+        # render label image if in output
+        if "label_rgb_map" in gs_render:
+            gt_label_map = self.dataset.load_label_image(pose_idx, view_idx)
+            self.log_image( "train_label_2", gs_render["label_rgb_map"], img_factor, gt_label_map)
+        # render body if multilayer
+        if self.opt['model'].get('network', 'AvatarNet') == "MultiLAvatarNet":
+            gs_body_render = self.avatar_net.render(items, bg_color = self.bg_color, layers=["body"])
+            self.log_image( "train_body_2", gs_body_render["rgb_map"], img_factor)
+
         if eval_cano_pts:
             os.makedirs(output_dir + '/cano_pts', exist_ok = True)
             save_mesh_as_ply(output_dir + '/cano_pts/iter_%d.ply' % self.iter_idx, (self.avatar_net.init_points + gs_render['offset']).cpu().numpy())

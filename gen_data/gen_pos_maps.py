@@ -14,6 +14,7 @@ import smplx
 from network.volume import CanoBlendWeightVolume
 from utils.renderer.renderer_pytorch3d import Renderer
 import config
+import pickle as pkl
 import pytorch3d.ops as ops
 
 def find_neighbor(pixel_idx, pix_to_face, mask, mesh, x, y):
@@ -91,6 +92,20 @@ def save_pos_map(pos_map, path):
     pc = trimesh.PointCloud(positions)
     pc.export(path)
 
+def generate_cano_maps(cano_smpl_v_dup, cano_smpl_attr_dup, attr):
+    cano_renderer.set_model(cano_smpl_v_dup, cano_smpl_attr_dup)
+    cano_renderer.set_camera(front_mv)
+    front_cano_attr_map, front_cano_pix_to_face = cano_renderer.render()
+    front_cano_attr_map = front_cano_attr_map[:, :, :3]
+
+    cano_renderer.set_camera(back_mv)
+    back_cano_attr_map, back_cano_pix_to_face = cano_renderer.render()
+    back_cano_attr_map = back_cano_attr_map[:, :, :3]
+    back_cano_attr_map = cv.flip(back_cano_attr_map, 1)
+    cano_attr_map = np.concatenate([front_cano_attr_map, back_cano_attr_map], 1)
+    cv.imwrite(data_dir + f'/{args.output_path}/cano_smpl_{attr}_map.exr', cano_attr_map)
+    return front_cano_pix_to_face, back_cano_pix_to_face, cano_attr_map
+
 
 def interpolate_lbs(pts, vertices, faces, vertex_lbs):
     from utils.posevocab_custom_ops.nearest_face import nearest_face_pytorch3d
@@ -122,6 +137,7 @@ if __name__ == '__main__':
     arg_parser.add_argument('-o', '--output_path', type=str, help='Configuration output path.')
     arg_parser.add_argument('-t', '--template_path', type=str, help='Configuration template path.')
     arg_parser.add_argument('-rc', '--render_color', default=False, help='Render color or not.')
+    arg_parser.add_argument('-ro', '--render_offset', default=False, help='Render color or not.')
     args = arg_parser.parse_args()
 
     opt = yaml.load(open(args.config_path, encoding = 'UTF-8'), Loader = yaml.FullLoader)
@@ -134,7 +150,7 @@ if __name__ == '__main__':
 
     cano_renderer = Renderer(map_size, map_size, shader_name = 'vertex_attribute')
 
-    smpl_model = smplx.SMPLX(config.PROJ_DIR + '/smpl_files/smplx', gender = 'neutral', use_pca = False, num_pca_comps = 45, flat_hand_mean = True, batch_size = 1)
+    smpl_model = smplx.SMPLX(config.PROJ_DIR + '/smpl_files/smplx', gender = 'neutral', use_pca = True, num_pca_comps = 12, flat_hand_mean = True, batch_size = 1)
     smpl_data = np.load(data_dir + '/smpl_params.npz')
     smpl_data = {k: torch.from_numpy(v.astype(np.float32)) for k, v in smpl_data.items()}
 
@@ -179,36 +195,18 @@ if __name__ == '__main__':
 
     # render hand mask
     if args.render_color:
+        generate_cano_maps(cano_smpl_v_dup, cano_smpl_c_dup, attr="hand")
 
-        cano_renderer.set_model(cano_smpl_v_dup, cano_smpl_c_dup)
-        cano_renderer.set_camera(front_mv)
-        front_cano_pos_map, front_cano_pix_to_face = cano_renderer.render()
-        front_cano_pos_map = front_cano_pos_map[:, :, :3]
-
-        cano_renderer.set_camera(back_mv)
-        back_cano_pos_map, back_cano_pix_to_face = cano_renderer.render()
-        back_cano_pos_map = back_cano_pos_map[:, :, :3]
-        back_cano_pos_map = cv.flip(back_cano_pos_map, 1)
-        back_cano_pix_to_face = cv.flip(back_cano_pix_to_face, 1)
-
-        cano_pos_map = np.concatenate([front_cano_pos_map, back_cano_pos_map], 1)
-        cv.imwrite(data_dir + f'/{args.output_path}/cano_smpl_hand_map.exr', cano_pos_map)
-
+    # render offset map
+    if args.render_offset:
+        with open((data_dir + f'/{args.template_path}.pkl'), 'rb') as f:
+            mesh_offset = pkl.load(f)
+        cano_smpl_off_dup = mesh_offset[smpl_faces.reshape(-1)]
+        generate_cano_maps(cano_smpl_v_dup, cano_smpl_off_dup, attr="offset")
 
     # render canonical smpl position maps
-    cano_renderer.set_model(cano_smpl_v_dup, cano_smpl_v_dup)
-    cano_renderer.set_camera(front_mv)
-    front_cano_pos_map, front_cano_pix_to_face = cano_renderer.render()
-    front_cano_pos_map =  front_cano_pos_map[:, :, :3]
 
-    cano_renderer.set_camera(back_mv)
-    back_cano_pos_map, back_cano_pix_to_face = cano_renderer.render()
-    back_cano_pos_map = back_cano_pos_map[:, :, :3]
-    back_cano_pos_map = cv.flip(back_cano_pos_map, 1)
-    back_cano_pix_to_face = cv.flip(back_cano_pix_to_face, 1)
-
-    cano_pos_map = np.concatenate([front_cano_pos_map, back_cano_pos_map], 1)
-    cv.imwrite(data_dir + f'/{args.output_path}/cano_smpl_pos_map.exr', cano_pos_map)
+    front_cano_pix_to_face, back_cano_pix_to_face, cano_pos_map = generate_cano_maps(cano_smpl_v_dup, cano_smpl_v_dup, attr="pos")
     # Generate neighbor idx and neighbor weights
 
     cano_pix_to_face_map = np.concatenate([front_cano_pix_to_face, back_cano_pix_to_face], 1)
@@ -235,17 +233,7 @@ if __name__ == '__main__':
 
 
     # render canonical smpl normal maps
-    cano_renderer.set_model(cano_smpl_v_dup, cano_smpl_n_dup)
-    cano_renderer.set_camera(front_mv)
-    front_cano_nml_map, _ = cano_renderer.render()
-    front_cano_nml_map = front_cano_nml_map[:, :, :3]
-
-    cano_renderer.set_camera(back_mv)
-    back_cano_nml_map, _ = cano_renderer.render()
-    back_cano_nml_map = back_cano_nml_map[:, :, :3]
-    back_cano_nml_map = cv.flip(back_cano_nml_map, 1)
-    cano_nml_map = np.concatenate([front_cano_nml_map, back_cano_nml_map], 1)
-    cv.imwrite(data_dir + f'/{args.output_path}/cano_smpl_nml_map.exr', cano_nml_map)
+    generate_cano_maps(cano_smpl_v_dup, cano_smpl_n_dup, attr="nml")
 
 
     body_mask = np.linalg.norm(cano_pos_map, axis = -1) > 0.
@@ -272,8 +260,8 @@ if __name__ == '__main__':
                 body_pose = smpl_data['body_pose'][pose_idx][None],
                 jaw_pose = smpl_data['jaw_pose'][pose_idx][None],
                 expression = smpl_data['expression'][pose_idx][None],
-                # left_hand_pose = smpl_data['left_hand_pose'][pose_idx][None],
-                # right_hand_pose = smpl_data['right_hand_pose'][pose_idx][None]
+                left_hand_pose = smpl_data['left_hand_pose'][pose_idx][None],
+                right_hand_pose = smpl_data['right_hand_pose'][pose_idx][None]
             )
 
         cano2live_jnt_mats_woRoot = torch.matmul(live_smpl_woRoot.A.cuda(), inv_cano_smpl_A)[0]

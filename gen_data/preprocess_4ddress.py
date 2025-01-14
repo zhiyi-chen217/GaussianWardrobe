@@ -3,18 +3,31 @@ import os
 import pickle
 import shutil
 import numpy as np
+import cv2 as cv
+import sys
+sys.path.append("/local/home/zhiychen/AnimatableGaussain")
+from utils.sh_utils import RGB2GRAY
 
-
-SUBJECT = 185
-CAMERA = 4
-TAKES = [i for i in range(1, 8)]
+SUBJECT = 127
+CAMERA = 76
+TAKES = [2, 4, 5, 6, 7, 8]
 LAYER = "Inner"
-def read_all_png_camera(data_dir, png_type="images", takes=TAKES, camera=CAMERA):
+SURFACE_LABEL = ['skin', 'upper', 'lower', 'hair', 'shoe', 'outer']
+SURFACE_LABEL_COLOR = np.array([[128, 128, 128], [255, 128, 0], [128, 0, 255], [180, 50, 50], [50, 180, 50], [0, 128, 255]])
+SURFACE_LABEL_GRAY = RGB2GRAY(SURFACE_LABEL_COLOR)
+MASK_LABEL = dict(zip(SURFACE_LABEL, SURFACE_LABEL_GRAY))
+
+def read_all_png_camera(data_dir, png_type="images", png_prefix="", takes=TAKES, camera=CAMERA):
     png_list = []
     for take in takes:
-        png_list += glob.glob(
-            os.path.join(data_dir, '%05d' % SUBJECT, LAYER, f'Take{take}', "Capture", '%04d' % camera, png_type, '*.png'),
-            recursive=True)
+        if png_type != "labels":
+            png_list += glob.glob(
+                os.path.join(data_dir, '%05d' % SUBJECT, LAYER, f'Take{take}', "Capture", png_type, '%04d' % camera, f'{png_prefix}*.png'),
+                recursive=True)
+        else:
+            png_list += glob.glob(
+                os.path.join(data_dir, '%05d' % SUBJECT, LAYER, f'Take{take}', "Capture", '%04d' % camera, png_type, f'{png_prefix}*.png'),
+                recursive=True)
     png_list.sort()
     return png_list
 def read_all_pose(data_dir):
@@ -30,7 +43,27 @@ def copy_png_to_folder(new_data_dir, png_list, png_type="images", camera=CAMERA)
         os.makedirs(os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, '%04d' % camera, png_type))
     for ind in range(len(png_list)):
         new_path = os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, '%04d' % camera, png_type, f'{ind:05d}.png')
+        # img = cv.imread(png_list[ind], cv.IMREAD_GRAYSCALE)
+        # new_img = np.full((img.shape[0], img.shape[1], 3), 128)
+        # new_img[img != 255] = 0
+        # new_img[img == MASK_LABEL["lower"]] = 255
+        # new_img[img == MASK_LABEL["upper"]] = 255
+        
+        # cv.imwrite(new_path, new_img) 
         shutil.copy(png_list[ind], new_path)
+
+def copy_filter_label(new_data_dir, png_list, camera=CAMERA, png_type="labels"):
+    if not os.path.exists(os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, '%04d' % camera, png_type)):
+        os.makedirs(os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, '%04d' % camera, png_type))
+    for ind in range(len(png_list)):
+        new_path = os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, '%04d' % camera, png_type, f'{ind:05d}.png')
+        img = cv.imread(png_list[ind], cv.IMREAD_GRAYSCALE)
+        new_img = np.full((img.shape[0], img.shape[1], 3), 0)
+        # new_img[img != 255] = 0
+        new_img[img == MASK_LABEL["lower"]] = 255
+        new_img[img == MASK_LABEL["upper"]] = 255
+        
+        cv.imwrite(new_path, new_img) 
 
 def copy_pose_to_folder(new_data_dir, pose_list):
     if not os.path.exists(os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, "pose")):
@@ -68,13 +101,16 @@ def combine_pose_to_npz(new_data_dir):
 
 
 if __name__ == '__main__':
-    data_dir = "/home/zhiychen/Desktop/snarf/data/4d_dress/"
-    new_data_dir = "/home/zhiychen/Desktop/test_data/multiviewRGC/4d_dress/"
-    image_list = read_all_png_camera(data_dir)
-    mask_list = read_all_png_camera(data_dir, png_type="masks")
-    pose_list = read_all_pose(data_dir)
-    copy_png_to_folder(new_data_dir, image_list)
-    copy_png_to_folder(new_data_dir, mask_list, png_type="masks")
+    data_dir = "/mnt/work/Clothes4D/SMLCHumans/"
+    new_data_dir = "/data/zhiychen/AnimatableGaussain/train_data/multiviewRGC/4d_dress/"
+    label_data_dir = "/data/zhiychen/4ddress/"
+    # image_list = read_all_png_camera(data_dir, png_prefix="capture")
+    # mask_list = read_all_png_camera(data_dir, png_type="masks", png_prefix="mask")
+    # pose_list = read_all_pose(data_dir)
+    # copy_png_to_folder(new_data_dir, image_list)
+    # copy_png_to_folder(new_data_dir, mask_list, png_type="masks")
     # copy_pose_to_folder(new_data_dir, pose_list)
     # combine_pose_to_npz(new_data_dir)
+    label_list = read_all_png_camera(label_data_dir, png_type="labels", png_prefix="label")
+    copy_filter_label(new_data_dir, label_list, png_type="labels_cloth")
     print("end")

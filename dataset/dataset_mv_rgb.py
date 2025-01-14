@@ -434,6 +434,7 @@ class MvRgbDataset4DDress(MvRgbDatasetBase):
         # label_img = cv.imread(os.path.join(self.data_dir, cam_name,
         #                                    "labels", '%05d.png' % pose_idx), cv.IMREAD_UNCHANGED)
         mask_img = cv.imread(os.path.join(self.data_dir, cam_name, "masks", '%05d.png' % pose_idx), cv.IMREAD_UNCHANGED)
+        mask_img = mask_img[:, :, 0]
         # color_img = np.concatenate([color_img, np.expand_dims(label_img, axis=2)], axis=2)
         # Use partial image
         # if self.layers is None:

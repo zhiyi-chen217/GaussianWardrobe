@@ -79,7 +79,7 @@ class MultiLAvatarNet(nn.Module):
         self.original_body_cover_scales = None
         self.original_body_cover_rotations = None
         # set up select gaussian for body
-        # self.layers_nn["body"].selected_gaussian = self.selected_body_gaussian
+        self.layers_nn["body"].selected_gaussian = self.selected_body_gaussian
 
     def transform_cano2live(self, gaussian_vals, lbs, items):
         pt_mats = torch.einsum('nj,jxy->nxy', lbs, items['cano2live_jnt_mats'])
@@ -121,7 +121,7 @@ class MultiLAvatarNet(nn.Module):
         body_color = torch.zeros_like(gaussian_body_vals["colors"]).to(config.device)
         gaussian_body_vals["label_colors"] = body_color
         cloth_color = torch.full_like(gaussian_cloth_vals["colors"], 1.0).to(config.device)
-        gaussian_cloth_vals["label_colors"] =  cloth_color
+        gaussian_cloth_vals["label_colors"] = cloth_color
 
         if not self.cover:
             for key in gaussian_cloth_vals.keys():

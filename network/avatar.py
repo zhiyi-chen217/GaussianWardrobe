@@ -30,6 +30,13 @@ class AvatarNet(nn.Module):
                 with_faces = np.load(config.opt['train']['data']['data_dir'] + '/{}/with_face.npy'
                                       .format(self.smpl_pos_map))
                 self.with_faces = torch.from_numpy(with_faces).to(torch.bool).to(config.device)
+            elif layer == "cloth":
+                self.smpl_pos_map = config.opt.get("smpl_pos_map", "smpl_pos_map") + f"_{layer}_offset"
+                cano_offset_map = cv.imread(config.opt['train']['data']['data_dir']
+                                           + '/{}/cano_smpl_offset_map.exr'.format(self.smpl_pos_map),
+                                      cv.IMREAD_UNCHANGED)
+                self.cano_offset_map = torch.from_numpy(cano_offset_map).to(torch.float32).to(config.device)
+
 
         self.random_style = opt.get('random_style', False)
         self.with_viewdirs = opt.get('with_viewdirs', True)
@@ -121,7 +128,7 @@ class AvatarNet(nn.Module):
 
         return gaussian_vals
 
-    def get_positions(self, pose_map, return_map = False):
+    def get_positions(self, pose_map, return_map = False, with_offset=False):
         position_map, _ = self.position_net([self.position_style], pose_map[None], randomize_noise = False)
         front_position_map, back_position_map = torch.split(position_map, [3, 3], 1)
         position_map = torch.cat([front_position_map, back_position_map], 3)[0].permute(1, 2, 0)
@@ -136,6 +143,8 @@ class AvatarNet(nn.Module):
             delta_position = 0.05 * position_map[self.cano_smpl_mask]
 
         positions = delta_position + self.cano_gaussian_model.get_xyz
+        if self.layer == "cloth" and with_offset:
+            positions =  self.cano_offset_map[self.cano_smpl_mask] + positions
         if return_map:
             return positions, position_map
         else:
@@ -204,20 +213,20 @@ class AvatarNet(nn.Module):
         new_opacity[self.selected_gaussian] = gaussian_vals["opacity"][self.selected_gaussian]
         gaussian_vals["opacity"] = new_opacity
 
-        new_scales = torch.zeros_like(gaussian_vals["scales"]).to(config.device)
-        new_scales[~self.selected_gaussian] = self.original_scales[~self.selected_gaussian]
-        new_scales[self.selected_gaussian] = gaussian_vals["scales"][self.selected_gaussian]
-        gaussian_vals["scales"] = new_scales
+        # new_scales = torch.zeros_like(gaussian_vals["scales"]).to(config.device)
+        # new_scales[~self.selected_gaussian] = self.original_scales[~self.selected_gaussian]
+        # new_scales[self.selected_gaussian] = gaussian_vals["scales"][self.selected_gaussian]
+        # gaussian_vals["scales"] = new_scales
 
-        new_offset = torch.zeros_like(gaussian_vals["offset"]).to(config.device)
-        new_offset[self.selected_gaussian] = gaussian_vals["offset"][self.selected_gaussian]
-        gaussian_vals["offset"] = new_offset
-        gaussian_vals["positions"] = new_offset + self.cano_gaussian_model.get_xyz
+        # new_offset = torch.zeros_like(gaussian_vals["offset"]).to(config.device)
+        # new_offset[self.selected_gaussian] = gaussian_vals["offset"][self.selected_gaussian]
+        # gaussian_vals["offset"] = new_offset
+        # gaussian_vals["positions"] = new_offset + self.cano_gaussian_model.get_xyz
 
-        new_rotations = torch.zeros_like(gaussian_vals["rotations"]).to(config.device)
-        new_rotations[~self.selected_gaussian] = self.original_rotations[~self.selected_gaussian]
-        new_rotations[self.selected_gaussian] = gaussian_vals["rotations"][self.selected_gaussian]
-        gaussian_vals["rotations"] = new_rotations
+        # new_rotations = torch.zeros_like(gaussian_vals["rotations"]).to(config.device)
+        # new_rotations[~self.selected_gaussian] = self.original_rotations[~self.selected_gaussian]
+        # new_rotations[self.selected_gaussian] = gaussian_vals["rotations"][self.selected_gaussian]
+        # gaussian_vals["rotations"] = new_rotations
 
 
 
@@ -239,7 +248,7 @@ class AvatarNet(nn.Module):
 
 
        
-        cano_pts, pos_map = self.get_positions(pose_map, return_map = True)
+        cano_pts, pos_map = self.get_positions(pose_map, return_map = True, with_offset = True)
         opacity, scales, rotations = self.get_others(pose_map)
         # if not self.training:
         # scales = torch.clip(scales, 0., 0.03)

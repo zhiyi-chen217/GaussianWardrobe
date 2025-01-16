@@ -181,6 +181,20 @@ class MultiLAvatarNet(nn.Module):
         label_body_rgb_map = render_body_label['render'].permute(1, 2, 0)
 
 
+        gaussian_cloth_vals["body_colors"] = gaussian_cloth_vals["colors"]
+        gaussian_cloth_vals["colors"] = torch.full_like(gaussian_cloth_vals["colors"], 1.0).to(config.device)
+        
+        render_cloth_label = render3(
+            gaussian_cloth_vals,
+            torch.tensor([0., 0., 0.]).to(config.device),
+            items['extr'],
+            items['intr'],
+            items['img_w'],
+            items['img_h']
+        )
+        label_cloth_rgb_map = render_cloth_label['render'].permute(1, 2, 0)
+
+
         ret = {
             'rgb_map': rgb_map,
             'mask_map': mask_map,
@@ -192,6 +206,7 @@ class MultiLAvatarNet(nn.Module):
             "gaussian_body_covered_color":  gaussian_body_vals["body_colors"][~self.selected_body_gaussian],
             "label_rgb_map": label_rgb_map,
             "label_body_rgb_map": label_body_rgb_map,
+            "label_cloth_rgb_map": label_cloth_rgb_map,
             "body_surface_opacity": gaussian_body_vals["opacity"][self.selected_body_gaussian],
             "body_covered_opacity": gaussian_body_vals["opacity"][~self.selected_body_gaussian],
         }

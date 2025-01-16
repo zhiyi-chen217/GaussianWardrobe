@@ -58,7 +58,7 @@ class AvatarTrainer:
         )
 
         self.random_bg_color = self.opt['train'].get('random_bg_color', True)
-        self.bg_color = (1., 1., 1.)
+        self.bg_color = (0.5, 0.5, 0.5)
         self.bg_color_cuda = torch.from_numpy(np.asarray(self.bg_color)).to(torch.float32).to(config.device)
         self.loss_weight = self.opt['train']['loss_weight']
         self.finetune_color = self.opt['train']['finetune_color']
@@ -220,7 +220,7 @@ class AvatarTrainer:
         if self.loss_weight['consistent_label_body'] > 0.:
             label_body_image = render_output['label_body_rgb_map']
             gt_label_body_image = items['label_body_img']
-            consistent_label_body_loss = torch.abs(label_body_image - gt_label_body_image).mean()
+            consistent_label_body_loss = torch.square(label_body_image - gt_label_body_image).mean()
             total_loss += self.loss_weight['consistent_label_body'] * consistent_label_body_loss
             batch_losses.update({
                 'consistent_label_body_loss': consistent_label_body_loss.item()
@@ -231,7 +231,7 @@ class AvatarTrainer:
             label_image = self.prepare_img(render_output['label_rgb_map'], boundary_mask_img)
             items['label_img'][~items['mask_img']] = self.bg_color_cuda
             gt_label_image = self.prepare_img(items['label_img'], boundary_mask_img)
-            consistent_label_loss = torch.abs(label_image - gt_label_image).mean()
+            consistent_label_loss = torch.square(label_image - gt_label_image).mean()
             total_loss += self.loss_weight['consistent_label'] * consistent_label_loss
             batch_losses.update({
                 'consistent_label_loss': consistent_label_loss.item()
@@ -239,7 +239,7 @@ class AvatarTrainer:
             self.logger.log({'consistent_label_loss': consistent_label_loss.item()})
 
         if self.loss_weight['l1'] > 0.:
-            l1_loss = torch.abs(image - gt_image).mean()
+            l1_loss = torch.square(image - gt_image).mean()
             total_loss += self.loss_weight['l1'] * l1_loss
             batch_losses.update({
                 'l1_loss': l1_loss.item()
@@ -563,6 +563,11 @@ class AvatarTrainer:
         if self.opt['model'].get('network', 'AvatarNet') == "MultiLAvatarNet":
             gs_body_render = self.avatar_net.render(items, bg_color = self.bg_color, layers=["body"])
             self.log_image( "train_body_1", gs_body_render["rgb_map"], img_factor)
+        if "label_rgb_map" in gs_render:
+            gt_label_map = self.dataset.load_label_image(pose_idx, view_idx)
+            self.log_image( "train_label_1", gs_render["label_rgb_map"], img_factor, gt_label_map)
+        if "label_cloth_rgb_map" in gs_render:
+            self.log_image( "train_label_cloth_1", gs_render["label_cloth_rgb_map"], img_factor)
         os.makedirs(output_dir, exist_ok = True)
         cv.imwrite(output_dir + '/iter_%d.jpg' % self.iter_idx, rgb_map)
         if eval_cano_pts:
@@ -599,6 +604,8 @@ class AvatarTrainer:
         if "label_rgb_map" in gs_render:
             gt_label_map = self.dataset.load_label_image(pose_idx, view_idx)
             self.log_image( "train_label_2", gs_render["label_rgb_map"], img_factor, gt_label_map)
+        if "label_cloth_rgb_map" in gs_render:
+            self.log_image( "train_label_cloth_2", gs_render["label_cloth_rgb_map"], img_factor)
         # render body if multilayer
         if self.opt['model'].get('network', 'AvatarNet') == "MultiLAvatarNet":
             gs_body_render = self.avatar_net.render(items, bg_color = self.bg_color, layers=["body"])
@@ -668,7 +675,7 @@ class AvatarTrainer:
         os.makedirs(output_dir + '/live_skeleton', exist_ok = True)
         os.makedirs(output_dir + '/rgb_map', exist_ok = True)
         os.makedirs(output_dir + '/mask_map', exist_ok = True)
-        os.makedirs(output_dir + '/offset_map', exist_ok=True)
+        os.makedirs(output_dir + '/label_rgb_map', exist_ok=True)
 
         geo_renderer = None
         item_0 = self.dataset.getitem(0, training = False)
@@ -867,7 +874,12 @@ class AvatarTrainer:
                 mask_map.clip_(0., 1.)
                 mask_map = (mask_map * 255).to(torch.uint8)
                 cv.imwrite(output_dir + '/mask_map/%08d.png' % item['data_idx'], mask_map.cpu().numpy())
-
+            if 'label_rgb_map' in output:
+                os.makedirs(output_dir + '/label_rgb_map', exist_ok = True)
+                label_rgb_map = output['label_rgb_map']
+                label_rgb_map.clip_(0., 1.)
+                label_rgb_map = (label_rgb_map * 255).to(torch.uint8)
+                cv.imwrite(output_dir + '/label_rgb_map/%08d.png' % item['data_idx'], label_rgb_map.cpu().numpy())
             if self.opt['test'].get('save_tex_map', False):
                 os.makedirs(output_dir + '/cano_tex_map', exist_ok = True)
                 cano_tex_map = output['cano_tex_map']

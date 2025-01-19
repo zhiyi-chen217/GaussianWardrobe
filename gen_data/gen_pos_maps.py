@@ -137,7 +137,8 @@ if __name__ == '__main__':
     arg_parser.add_argument('-o', '--output_path', type=str, help='Configuration output path.')
     arg_parser.add_argument('-t', '--template_path', type=str, help='Configuration template path.')
     arg_parser.add_argument('-rc', '--render_color', default=False, help='Render color or not.')
-    arg_parser.add_argument('-ro', '--render_offset', default=False, help='Render color or not.')
+    arg_parser.add_argument('-ro', '--render_offset', default=False, help='Render offset or not.')
+    arg_parser.add_argument('-lw', '--lbs_weight', default="cano_weight_volume", help='Render color or not.')
     args = arg_parser.parse_args()
 
     opt = yaml.load(open(args.config_path, encoding = 'UTF-8'), Loader = yaml.FullLoader)
@@ -239,7 +240,7 @@ if __name__ == '__main__':
     body_mask = np.linalg.norm(cano_pos_map, axis = -1) > 0.
     cano_pts = cano_pos_map[body_mask]
     if using_template:
-        weight_volume = CanoBlendWeightVolume(data_dir + '/cano_weight_volume.npz')
+        weight_volume = CanoBlendWeightVolume(data_dir + f'/{args.lbs_weight}.npz')
         pts_lbs = weight_volume.forward_weight(torch.from_numpy(cano_pts)[None].cuda())[0]
     else:
         pts_lbs = interpolate_lbs(cano_pts, cano_smpl_v, smpl_faces, smpl_model.lbs_weights)

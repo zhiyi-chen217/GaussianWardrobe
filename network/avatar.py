@@ -13,29 +13,28 @@ from network.styleunet.dual_styleunet import DualStyleUNet
 from gaussians.gaussian_model import GaussianModel
 from gaussians.gaussian_renderer import render3
 from pytorch3d.structures import Meshes 
-
+from utils.net_util import read_map_mask
 class AvatarNet(nn.Module):
-    def __init__(self, opt, layer=None):
+    def __init__(self, opt, layer=None, data_dir=None):
         super(AvatarNet, self).__init__()
         self.opt = opt
         self.layer = layer
+        self.mode = config.opt["mode"]
+        self.data_dir = config.opt[self.mode]['data']['data_dir'] if data_dir is None else data_dir
         if layer is None:
             self.smpl_pos_map = config.opt.get("smpl_pos_map", "smpl_pos_map")
         else:
             self.smpl_pos_map = config.opt.get("smpl_pos_map", "smpl_pos_map") + f"_{layer}"
-            if layer == "body":
-                valid_faces = np.load(config.opt['train']['data']['data_dir'] + '/{}/valid_faces.npy'
-                                      .format(self.smpl_pos_map))
-                self.valid_faces = torch.from_numpy(valid_faces).to(torch.int64).to(config.device)
-                with_faces = np.load(config.opt['train']['data']['data_dir'] + '/{}/with_face.npy'
-                                      .format(self.smpl_pos_map))
-                self.with_faces = torch.from_numpy(with_faces).to(torch.bool).to(config.device)
-            elif layer == "cloth":
-                self.smpl_pos_map = config.opt.get("smpl_pos_map", "smpl_pos_map") + f"_{layer}_offset"
-                cano_offset_map = cv.imread(config.opt['train']['data']['data_dir']
-                                           + '/{}/cano_smpl_offset_map.exr'.format(self.smpl_pos_map),
-                                      cv.IMREAD_UNCHANGED)
-                self.cano_offset_map = torch.from_numpy(cano_offset_map).to(torch.float32).to(config.device)
+     
+            valid_faces = np.load(self.data_dir + '/{}/valid_faces.npy'
+                                    .format(self.smpl_pos_map))
+            self.valid_faces = torch.from_numpy(valid_faces).to(torch.int64).to(config.device)
+            with_faces = np.load(self.data_dir + '/{}/with_face.npy'
+                                    .format(self.smpl_pos_map))
+            self.with_faces = torch.from_numpy(with_faces).to(torch.bool).to(config.device)
+     
+            self.cano_offset_map, _ = read_map_mask(self.data_dir + '/{}/cano_smpl_offset_map.exr'
+                                     .format(self.smpl_pos_map))
 
 
         self.random_style = opt.get('random_style', False)
@@ -44,19 +43,12 @@ class AvatarNet(nn.Module):
         # init canonical gausssian model
         self.max_sh_degree = 0
         self.cano_gaussian_model = GaussianModel(sh_degree = self.max_sh_degree)
-        cano_smpl_map = cv.imread(config.opt['train']['data']['data_dir'] + '/{}/cano_smpl_pos_map.exr'
-                                  .format(self.smpl_pos_map), cv.IMREAD_UNCHANGED)
-        self.cano_smpl_map = torch.from_numpy(cano_smpl_map).to(torch.float32).to(config.device)
-        self.cano_smpl_mask = torch.linalg.norm(self.cano_smpl_map, dim = -1) > 0.
+        self.cano_smpl_map, self.cano_smpl_mask = read_map_mask(self.data_dir + '/{}/cano_smpl_pos_map.exr'
+                                     .format(self.smpl_pos_map))
 
         
-        if "tightness" in opt.get("offset_mode", "tightness"):
-            cano_tightness_map = cv.imread(config.opt['train']['data']['data_dir']
-                                           + '/{}/cano_smpl_t_map.exr'.format(self.smpl_pos_map),
-                                      cv.IMREAD_UNCHANGED)
-            self.cano_tightness_map = torch.from_numpy(cano_tightness_map).to(torch.float32).to(config.device)
         self.init_points = self.cano_smpl_map[self.cano_smpl_mask]
-        self.lbs = torch.from_numpy(np.load(config.opt['train']['data']['data_dir'] + '/{}/init_pts_lbs.npy'
+        self.lbs = torch.from_numpy(np.load(self.data_dir + '/{}/init_pts_lbs.npy'
                                             .format(self.smpl_pos_map))).to(torch.float32).to(config.device)
         self.cano_gaussian_model.create_from_pcd(self.init_points, torch.rand_like(self.init_points), spatial_lr_scale = 2.5)
 
@@ -69,9 +61,8 @@ class AvatarNet(nn.Module):
         self.other_style = torch.ones([1, self.other_net.style_dim], dtype=torch.float32, device=config.device) / np.sqrt(self.other_net.style_dim)
 
         if self.with_viewdirs:
-            cano_nml_map = cv.imread(config.opt['train']['data']['data_dir'] + '/{}/cano_smpl_nml_map.exr'
-                                     .format(self.smpl_pos_map, cv.IMREAD_UNCHANGED))
-            self.cano_nml_map = torch.from_numpy(cano_nml_map).to(torch.float32).to(config.device)
+            self.cano_nml_map, self.cano_smpl_mask = read_map_mask(self.data_dir + '/{}/cano_smpl_nml_map.exr'
+                                     .format(self.smpl_pos_map))
             self.cano_nmls = self.cano_nml_map[self.cano_smpl_mask]
             self.viewdir_net = nn.Sequential(
                 nn.Conv2d(1, 64, 4, 2, 1),
@@ -79,13 +70,14 @@ class AvatarNet(nn.Module):
                 nn.Conv2d(64, 128, 4, 2, 1)
             )
         self.selected_gaussian = None
-        self.original_rotations = None
-        self.original_scales = None
 
-    def get_normal(self, gaussian_pos):
+    def get_normal(self, gaussian_pos, layer="body"):
         gaussian_mesh = Meshes(gaussian_pos.unsqueeze(0), self.valid_faces.unsqueeze(0))
-        # save_ply("/local/home/zhiychen/AnimatableGaussain/gaussian_mesh.ply", gaussian_pos, self.valid_faces)
-        return gaussian_mesh.verts_normals_packed()
+        # save_ply(f"/local/home/zhiychen/AnimatableGaussain/gaussian_{layer}_mesh.ply", gaussian_pos, self.valid_faces)
+        vertex_normal = gaussian_mesh.verts_normals_packed()
+        temp = vertex_normal[:, 0].clone()
+        vertex_normal[:, :2] = - vertex_normal[:, :2] 
+        return vertex_normal
     def generate_mean_hands(self):
         # print('# Generating mean hands ...')
         import glob
@@ -95,7 +87,7 @@ class AvatarNet(nn.Module):
         self.hand_mask = torch.logical_or(self.hand_mask, lbs_argmax == 21)
         self.hand_mask = torch.logical_or(self.hand_mask, lbs_argmax >= 25)
 
-        pose_map_paths = sorted(glob.glob(config.opt['train']['data']['data_dir'] + '/{}/%08d.exr'
+        pose_map_paths = sorted(glob.glob(self.data_dir + '/{}/%08d.exr'
                                           .format(self.smpl_pos_map) % config.opt['test']['fix_hand_id']))
         smpl_pos_map = cv.imread(pose_map_paths[0], cv.IMREAD_UNCHANGED)
         pos_map_size = smpl_pos_map.shape[1] // 2
@@ -140,11 +132,13 @@ class AvatarNet(nn.Module):
         elif self.opt.get("offset_mode") == "no_scale":
             delta_position = position_map[self.cano_smpl_mask]
         else:
+            # if self.layer == "cloth":
+            # delta_position = 0 * position_map[self.cano_smpl_mask]
+            # else:
             delta_position = 0.05 * position_map[self.cano_smpl_mask]
-
         positions = delta_position + self.cano_gaussian_model.get_xyz
-        if self.layer == "cloth" and with_offset:
-            positions =  self.cano_offset_map[self.cano_smpl_mask] + positions
+        if self.layer and with_offset:
+            positions = self.cano_offset_map[self.cano_smpl_mask] + positions
         if return_map:
             return positions, position_map
         else:
@@ -204,6 +198,20 @@ class AvatarNet(nn.Module):
             'smpl_pos_map': live_pos_map
         })
         return live_pos_map
+    
+    def update_selected_pos(self, gaussian_body_vals, gaussian_cloth_body_vals, items_body, update_offset_mask_cloth, update_offset_mask_body):
+        for key in ["opacity", "offset", "scales", "rotations", "colors"]:
+            new_value = torch.zeros_like(gaussian_body_vals[key]).to(config.device)
+            new_value[~update_offset_mask_body] = gaussian_body_vals[key][~update_offset_mask_body]
+            new_value[update_offset_mask_body] =  gaussian_cloth_body_vals[key][update_offset_mask_cloth]
+            gaussian_body_vals[key] = new_value
+        
+        gaussian_body_vals["positions"] = gaussian_body_vals["offset"]  + self.cano_gaussian_model.get_xyz
+        pt_mats = torch.einsum('nj,jxy->nxy', self.lbs, items_body['cano2live_jnt_mats'])
+        gaussian_body_vals['positions'] = torch.einsum('nxy,ny->nx', pt_mats[..., :3, :3], gaussian_body_vals['positions']) + pt_mats[..., :3, 3]
+
+        return gaussian_body_vals
+
 
     def select_gaussian(self, gaussian_vals):
         # use surface opacity of covered body
@@ -227,11 +235,19 @@ class AvatarNet(nn.Module):
         # new_rotations[~self.selected_gaussian] = self.original_rotations[~self.selected_gaussian]
         # new_rotations[self.selected_gaussian] = gaussian_vals["rotations"][self.selected_gaussian]
         # gaussian_vals["rotations"] = new_rotations
+    def fix_opacity(self, gaussian_vals):
+        # use surface opacity of covered body
+        new_opacity = torch.full_like(gaussian_vals["opacity"], 1).to(config.device)
+        gaussian_vals["opacity"] = new_opacity
 
-
-
-
-    def render(self, items, bg_color = (0., 0., 0.), use_pca = False, use_vae = False, only_gaussian=False):
+    def transform_normal(self, A, B):
+        # Append a column of 1's to A
+        ones_column = torch.ones(A.shape[0], 1, dtype=A.dtype).to(config.device)  # Shape (m, 1)
+        A_extended = torch.cat((A, ones_column), dim=1)  # Concatenate along the columns (axis 1)
+        transformed_norm = torch.einsum('ij,jk->ik', A_extended, B)[:, :3]
+        # Use einsum to multiply each row of A_extended by B
+        return (transformed_norm + 1) / 2
+    def render(self, items, bg_color = (0., 0., 0.), use_pca = False, use_vae = False, only_gaussian=False, layers=None):
         """
         Note that no batch index in items.
         """
@@ -291,23 +307,14 @@ class AvatarNet(nn.Module):
         gaussian_vals["offset"] = nonrigid_offset
 
         gaussian_vals["cano_positions"] = cano_gaussian_pos
-        if self.layer == "body":
-            gaussian_vals["gaussian_norm"] = self.get_normal(cano_gaussian_pos)
-
-        # store original scale and rotation after pretraining
-        if self.original_scales is None:
-            self.original_scales = gaussian_vals["scales"].detach()
-
-        if self.original_rotations is None:
-            self.original_rotations = gaussian_vals["rotations"].detach()
-
 
         # select gaussian
         if not (self.selected_gaussian is None):
             self.select_gaussian(gaussian_vals)
         # transform to deformed space
         gaussian_vals = self.transform_cano2live(gaussian_vals, items)
-        
+        gaussian_vals["gaussian_norm"] = self.get_normal(gaussian_vals["positions"], self.layer)
+        gaussian_vals["gaussian_norm"] = self.transform_normal(gaussian_vals["gaussian_norm"], items['extr'])
         # In multilayer case we only use the gaussian_vals and render later
         if only_gaussian:
             return gaussian_vals

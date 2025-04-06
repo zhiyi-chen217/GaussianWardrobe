@@ -22,17 +22,18 @@ from tqdm import tqdm
 import importlib
 import wandb
 import config
+from PIL import Image
 from network.lpips import LPIPS
 from dataset.dataset_pose import PoseDataset
 import utils.net_util as net_util
 import utils.visualize_util as visualize_util
 from utils.renderer import Renderer
-from utils.net_util import to_cuda
+from utils.net_util import to_cuda, GMoF
 from utils.visualize_util import post_process_gs_render
 from utils.obj_io import save_mesh_as_ply
 from gaussians.obj_io import save_gaussians_as_ply
-
-
+from network.multi_layer_avatar import MultiLAvatarNet
+from network.combined_network import CombinedAvatarNet
 def safe_exists(path):
     if path is None:
         return False
@@ -44,15 +45,19 @@ class AvatarTrainer:
         self.opt = opt
         self.patch_size = 512
         self.iter_idx = 0
-        self.iter_num = 160000
+        self.iter_num = 240000
         self.lr_init = float(self.opt['train'].get('lr_init', 5e-4))
-
+        self.robustifier = GMoF(rho=100)
         avatar_module = self.opt['model'].get('module', 'network.avatar')
         avatar_network = self.opt['model'].get('network', 'AvatarNet')
         print('Import AvatarNet from %s' % avatar_module)
         AvatarNet = importlib.import_module(avatar_module).__getattribute__(avatar_network)
-        self.avatar_net = AvatarNet(self.opt['model'],
+        if not config.opt["mode"] == "exchange_cloth":
+            self.avatar_net = AvatarNet(self.opt['model'],
                                     self.opt['train']['data'].get('layers', None)).to(config.device)
+        else:
+            self.avatar_net = AvatarNet(self.opt['model'],
+                                    self.opt['train']['data'].get('layers', None), data_dir=self.opt['exchange_cloth']['data_cloth']["data_dir"]).to(config.device)
         self.optm = torch.optim.Adam(
             self.avatar_net.parameters(), lr = self.lr_init
         )
@@ -179,7 +184,23 @@ class AvatarTrainer:
 
     def prepare_img(self, img, boundary_mask_img):
         img = img.permute(2, 0, 1)
-        return img * boundary_mask_img[None] + (1. - boundary_mask_img[None]) * self.bg_color_cuda[:, None, None]
+        return img * boundary_mask_img[None] + (1. - boundary_mask_img[None]) * torch.from_numpy(np.asarray([0.75, 0.75, 0.75])).to(torch.float32).to(config.device)[:, None, None]
+    def img_loss(self, gt_img, pred_img, boundary_mask_img=None, mask_img=None):
+        if (not (mask_img is None)) and (not (boundary_mask_img is None)):
+            pred_img = self.prepare_img(pred_img, boundary_mask_img)
+            gt_img[~mask_img] = self.bg_color_cuda
+            gt_img = self.prepare_img(gt_img, boundary_mask_img)
+        loss = torch.abs(pred_img - gt_img).mean()
+        return loss
+    def seg_loss(self, gt_img, pred_img, boundary_mask_img, mask_img):
+        pred_img = self.prepare_img(pred_img, boundary_mask_img)
+        gt_img[~mask_img] = self.bg_color_cuda
+        gt_img = self.prepare_img(gt_img, boundary_mask_img)
+        pred_seg = pred_img[:, mask_img]
+        gt_seg = gt_img[:, mask_img]
+        eps = 1e-6
+        loss =  - (gt_seg * torch.log(pred_seg + eps) + (1 - gt_seg) * torch.log(1 - pred_seg + eps))
+        return loss.mean()
 
     def forward_one_pass(self, items):
         # forward_start = torch.cuda.Event(enable_timing = True)
@@ -218,9 +239,7 @@ class AvatarTrainer:
         gt_image = self.prepare_img(items['color_img'], boundary_mask_img)
 
         if self.loss_weight['consistent_label_body'] > 0.:
-            label_body_image = render_output['label_body_rgb_map']
-            gt_label_body_image = items['label_body_img']
-            consistent_label_body_loss = torch.square(label_body_image - gt_label_body_image).mean()
+            consistent_label_body_loss = self.img_loss(gt_img=items['label_body_img'], pred_img=render_output['label_body_rgb_map'])
             total_loss += self.loss_weight['consistent_label_body'] * consistent_label_body_loss
             batch_losses.update({
                 'consistent_label_body_loss': consistent_label_body_loss.item()
@@ -228,10 +247,8 @@ class AvatarTrainer:
             self.logger.log({'consistent_label_body_loss': consistent_label_body_loss.item()})
 
         if self.loss_weight['consistent_label'] > 0.:
-            label_image = self.prepare_img(render_output['label_rgb_map'], boundary_mask_img)
-            items['label_img'][~items['mask_img']] = self.bg_color_cuda
-            gt_label_image = self.prepare_img(items['label_img'], boundary_mask_img)
-            consistent_label_loss = torch.square(label_image - gt_label_image).mean()
+            consistent_label_loss = self.seg_loss(gt_img=items['label_img'], pred_img=render_output['label_rgb_map'], 
+                                                boundary_mask_img=boundary_mask_img, mask_img=items['mask_img'])
             total_loss += self.loss_weight['consistent_label'] * consistent_label_loss
             batch_losses.update({
                 'consistent_label_loss': consistent_label_loss.item()
@@ -239,7 +256,7 @@ class AvatarTrainer:
             self.logger.log({'consistent_label_loss': consistent_label_loss.item()})
 
         if self.loss_weight['l1'] > 0.:
-            l1_loss = torch.square(image - gt_image).mean()
+            l1_loss = self.img_loss(gt_img=gt_image, pred_img=image)
             total_loss += self.loss_weight['l1'] * l1_loss
             batch_losses.update({
                 'l1_loss': l1_loss.item()
@@ -276,13 +293,38 @@ class AvatarTrainer:
 
 
         if self.loss_weight['offset'] > 0.:
-            offset = render_output["offset"]
-            offset_loss = torch.linalg.norm(offset, dim = -1).mean()
-            total_loss += self.loss_weight['offset'] * offset_loss.item()
-            batch_losses.update({
-                'offset_loss': offset_loss.item()
-            })
-            self.logger.log({'offset_loss': offset_loss.item()})
+            if "body_offset" in render_output:
+                body_offset = render_output["body_offset"]
+                body_offset_loss = torch.linalg.norm(body_offset, dim = -1).mean()
+                total_loss += self.loss_weight['offset'] * body_offset_loss.item()
+                batch_losses.update({
+                    'body_offset_loss': body_offset_loss.item()
+                })
+                self.logger.log({'body_offset_loss': body_offset_loss.item()})
+            if "cloth_offset" in render_output:
+                cloth_offset = render_output["cloth_offset"]
+                cloth_offset_loss = torch.linalg.norm(cloth_offset, dim = -1).mean()
+                total_loss += self.loss_weight['offset'] * cloth_offset_loss.item()
+                batch_losses.update({
+                    'cloth_offset_loss': cloth_offset_loss.item()
+                })
+                self.logger.log({'cloth_offset_loss': cloth_offset_loss.item()})
+            if "outer_offset" in render_output:
+                outer_offset = render_output["outer_offset"]
+                outer_offset_loss = torch.linalg.norm(outer_offset, dim = -1).mean()
+                total_loss += self.loss_weight['offset'] * outer_offset_loss.item()
+                batch_losses.update({
+                    'outer_offset_loss': outer_offset_loss.item()
+                })
+                self.logger.log({'outer_offset_loss': outer_offset_loss.item()})
+            if "offset" in render_output:
+                offset = render_output["offset"]
+                offset_loss = torch.linalg.norm(offset, dim = -1).mean()
+                total_loss += self.loss_weight['offset'] * offset_loss.item()
+                batch_losses.update({
+                    'offset_loss': offset_loss.item()
+                })
+                self.logger.log({'offset_loss': offset_loss.item()})
             
         if self.loss_weight["body_loss"] > 0:
             body_loss = self.body_loss(render_output["gaussian_cloth_pos"],
@@ -292,7 +334,24 @@ class AvatarTrainer:
                 'body_loss': body_loss.item()
             })
             self.logger.log({'body_loss': body_loss.item()})
+        if self.loss_weight["normal_loss"] > 0:
+            normal_loss = self.img_loss(gt_img=items['normal_img'], pred_img=render_output['normal_map'])
+            total_loss += self.loss_weight["normal_loss"] * normal_loss
+            batch_losses.update({
+                'normal_loss': normal_loss.item()
+            })
+            self.logger.log({'normal_loss': normal_loss.item()})
 
+        if self.loss_weight["opacity_loss"] > 0:
+            gaussian_cloth_opacity = render_output["gaussian_cloth_opacity"]
+            eps = 1e-6
+            opacity_loss =  -1 * (gaussian_cloth_opacity * (gaussian_cloth_opacity + eps).log() + (1-gaussian_cloth_opacity) * (1 - gaussian_cloth_opacity + eps).log())
+            # opacity_loss = - torch.log(gaussian_cloth_opacity) 
+            opacity_loss = opacity_loss.mean() * 2
+            total_loss += self.loss_weight['opacity_loss'] * opacity_loss
+            batch_losses.update({
+                'opacity_loss': opacity_loss.item()
+            })
         if self.loss_weight['laplacian'] > 0.:
             gaussian_offset = render_output["offset"] * 1000
             # read required data, convert and send to device
@@ -313,9 +372,10 @@ class AvatarTrainer:
             })
             self.logger.log({'laplacian_loss': laplacian_loss.item() })
         
-        if self.loss_weight['consistent_body_color'] > 0. and self.epoch_idx >= 1 :
+        if self.loss_weight['consistent_body_color'] > 0. and self.epoch_idx > 8 :
             mean_hand_color = render_output["gaussian_body_hand_color"].detach().mean(dim=0)
-            consistent_body_color_loss = (render_output["gaussian_body_covered_color"] - mean_hand_color).abs().mean()
+            irrelevant_color = torch.tensor([0., 1.0, 0.]).to(config.device)
+            consistent_body_color_loss = (render_output["gaussian_body_covered_color"]- mean_hand_color).abs().mean()
             total_loss += self.loss_weight['consistent_body_color'] * consistent_body_color_loss
             batch_losses.update({
                 'consistent_body_color_loss': consistent_body_color_loss.item()
@@ -329,6 +389,7 @@ class AvatarTrainer:
         # backward_end.record()
 
         # step_start.record()
+        torch.nn.utils.clip_grad_norm_(self.avatar_net.parameters(), self.opt['train']["gd_clip"])
         self.optm.step()
         self.optm.zero_grad()
         # step_end.record()
@@ -420,9 +481,9 @@ class AvatarTrainer:
             self.lpips = LPIPS(net = 'vgg').to(config.device)
             for p in self.lpips.parameters():
                 p.requires_grad = False
-
         if self.opt['train']['prev_ckpt'] is not None:
-            start_epoch, self.iter_idx = self.load_ckpt(self.opt['train']['prev_ckpt'], load_optm = True)
+            prev_ckpt_path = os.path.join(self.opt['train']['net_ckpt_dir'], self.opt['train']['prev_ckpt'] )
+            start_epoch, self.iter_idx = self.load_ckpt(prev_ckpt_path, load_optm = True)
             start_epoch += 1
             self.iter_idx += 1
         else:
@@ -442,6 +503,14 @@ class AvatarTrainer:
                 self.optm.state = collections.defaultdict(dict)
                 start_epoch = 0
                 self.iter_idx = 0
+        if self.opt['train']['inner_ckpt_dir'] is not None:
+            inner_net = MultiLAvatarNet(self.opt['model'], ["body", "cloth"]).to(config.device)
+            self.load_ckpt_net(self.opt['train']['inner_ckpt_dir'], inner_net, False)
+            self.avatar_net.layers_nn["body"] = inner_net.layers_nn["body"]
+            self.avatar_net.layers_nn["cloth"] = inner_net.layers_nn["cloth"]
+            self.optm = torch.optim.Adam(self.avatar_net.parameters(), lr = self.lr_init)
+            self.optm.state = collections.defaultdict(dict)
+
 
         # one_step_start = torch.cuda.Event(enable_timing = True)
         # one_step_end = torch.cuda.Event(enable_timing = True)
@@ -519,12 +588,15 @@ class AvatarTrainer:
                 latest_folder = self.opt['train']['net_ckpt_dir'] + '/epoch_latest'
                 os.makedirs(latest_folder, exist_ok = True)
                 self.save_ckpt(latest_folder)
-    def log_image(self, tag, rgb_map, img_factor=1, gt_image=None):
+    def log_image(self, tag, rgb_map, img_factor=1, gt_image=None, process=False):
         rgb_map = post_process_gs_render(rgb_map)
         if gt_image is not None:
             gt_image = cv.resize(gt_image, (0, 0), fx = img_factor, fy = img_factor)
             rgb_map = np.concatenate([rgb_map, gt_image], 1)
-        self.logger.log({tag: wandb.Image(rgb_map[:,:, ::-1])})
+        if not process:
+            self.logger.log({tag: wandb.Image(rgb_map[:,:, ::-1])})
+        else:
+            self.logger.log({tag: wandb.Image(rgb_map)})
         return rgb_map
 
     @torch.no_grad()
@@ -534,7 +606,7 @@ class AvatarTrainer:
         img_factor = self.opt['train'].get('eval_img_factor', 1.0)
         # training data
         # pose_idx, view_idx = self.opt['train'].get('eval_training_ids', (310, 19))
-        pose_idx, view_idx = (np.random.randint(600), 1)
+        pose_idx, view_idx = (0, 7)
         intr = self.dataset.intr_mats[view_idx].copy()
         intr[:2] *= img_factor
         item = self.dataset.getitem(0,
@@ -566,8 +638,8 @@ class AvatarTrainer:
         if "label_rgb_map" in gs_render:
             gt_label_map = self.dataset.load_label_image(pose_idx, view_idx)
             self.log_image( "train_label_1", gs_render["label_rgb_map"], img_factor, gt_label_map)
-        if "label_cloth_rgb_map" in gs_render:
-            self.log_image( "train_label_cloth_1", gs_render["label_cloth_rgb_map"], img_factor)
+        if "normal_map" in gs_render:
+            self.log_image( "normal_map_1", gs_render["normal_map"], img_factor, process=True)
         os.makedirs(output_dir, exist_ok = True)
         cv.imwrite(output_dir + '/iter_%d.jpg' % self.iter_idx, rgb_map)
         if eval_cano_pts:
@@ -604,8 +676,8 @@ class AvatarTrainer:
         if "label_rgb_map" in gs_render:
             gt_label_map = self.dataset.load_label_image(pose_idx, view_idx)
             self.log_image( "train_label_2", gs_render["label_rgb_map"], img_factor, gt_label_map)
-        if "label_cloth_rgb_map" in gs_render:
-            self.log_image( "train_label_cloth_2", gs_render["label_cloth_rgb_map"], img_factor)
+        if "normal_map" in gs_render:
+            self.log_image( "normal_map_2", gs_render["normal_map"], img_factor, process=True)
         # render body if multilayer
         if self.opt['model'].get('network', 'AvatarNet') == "MultiLAvatarNet":
             gs_body_render = self.avatar_net.render(items, bg_color = self.bg_color, layers=["body"])
@@ -630,7 +702,117 @@ class AvatarTrainer:
         interpenetration = interpenetration.pow(3)
         loss = interpenetration.mean(-1)
         return loss
+    
+    def gen_output_dir(self, mode, exp_name, dataset, iter_idx):
+        output_dir = self.opt[mode].get('output_dir', None)
+        if output_dir is None:
+            view_setting = config.opt[mode].get('view_setting', 'free')
+            if view_setting == 'camera':
+                view_folder = 'cam_%04d' % config.opt[mode]['render_view_idx']
+            else:
+                view_folder = view_setting + '_view'
+            output_dir = f'./{mode}_results/{dataset.subject_name}/{exp_name}/{view_folder}' + '/batch_%06d' % iter_idx
+        return output_dir
 
+    def get_global_orient_center(self):
+        item_0 = self.dataset.getitem(0, training = False)
+        object_center = item_0['live_bounds'].mean(0)
+        global_orient = item_0['global_orient'].cpu().numpy() if isinstance(item_0['global_orient'], torch.Tensor) else item_0['global_orient']
+        global_orient = cv.Rodrigues(global_orient)[0]
+        return global_orient, object_center
+
+    def get_render_setting(self, view_setting, mode, object_center, global_orient):
+        img_scale = self.opt['test'].get('img_scale', 1.0)
+        view_setting = config.opt['test'].get('view_setting', 'free')
+        if view_setting == 'camera':
+            # training view setting
+            cam_id = config.opt['test']['render_view_idx']
+            intr = self.dataset.intr_mats[cam_id].copy()
+            intr[:2] *= img_scale
+            extr = self.dataset.extr_mats[cam_id].copy()
+            img_h, img_w = int(self.dataset.img_heights[cam_id] * img_scale), int(self.dataset.img_widths[cam_id] * img_scale)
+        elif view_setting.startswith('free'):
+            # free view setting
+            # frame_num_per_circle = 360
+            frame_num_per_circle = 216
+            rot_Y = (idx % frame_num_per_circle) / float(frame_num_per_circle) * 2 * np.pi
+
+            extr = visualize_util.calc_free_mv(object_center,
+                                                tar_pos = np.array([0, 0, 2.5]),
+                                                rot_Y = rot_Y,
+                                                rot_X = 0.3 if view_setting.endswith('bird') else 0.,
+                                                global_orient = global_orient if self.opt[mode].get('global_orient', False) else None)
+            intr = np.array([[1100, 0, 512], [0, 1100, 512], [0, 0, 1]], np.float32)
+            intr[:2] *= img_scale
+            img_h = int(1024 * img_scale)
+            img_w = int(1024 * img_scale)
+        elif view_setting.startswith('front'):
+            # front view setting
+            extr = visualize_util.calc_free_mv(object_center,
+                                                tar_pos = np.array([0, 0, 2.5]),
+                                                rot_Y = 0.,
+                                                rot_X = 0.3 if view_setting.endswith('bird') else 0.,
+                                                global_orient = global_orient if self.opt[mode].get('global_orient', False) else None)
+            intr = np.array([[1100, 0, 512], [0, 1100, 512], [0, 0, 1]], np.float32)
+            intr[:2] *= img_scale
+            img_h = int(1024 * img_scale)
+            img_w = int(1024 * img_scale)
+        elif view_setting.startswith('back'):
+            # back view setting
+            extr = visualize_util.calc_free_mv(object_center,
+                                                tar_pos = np.array([0, 0, 2.5]),
+                                                rot_Y = np.pi,
+                                                rot_X = 0.5 * np.pi / 4. if view_setting.endswith('bird') else 0.,
+                                                global_orient = global_orient if self.opt[mode].get('global_orient', False) else None)
+            intr = np.array([[1100, 0, 512], [0, 1100, 512], [0, 0, 1]], np.float32)
+            intr[:2] *= img_scale
+            img_h = int(1024 * img_scale)
+            img_w = int(1024 * img_scale)
+        elif view_setting.startswith('moving'):
+            # moving camera setting
+            extr = visualize_util.calc_free_mv(object_center,
+                                                # tar_pos = np.array([0, 0, 3.0]),
+                                                # rot_Y = -0.3,
+                                                tar_pos = np.array([0, 0, 2.5]),
+                                                rot_Y = 0.,
+                                                rot_X = 0.3 if view_setting.endswith('bird') else 0.,
+                                                global_orient = global_orient if self.opt[mode].get('global_orient', False) else None)
+            intr = np.array([[1100, 0, 512], [0, 1100, 512], [0, 0, 1]], np.float32)
+            intr[:2] *= img_scale
+            img_h = int(1024 * img_scale)
+            img_w = int(1024 * img_scale)
+        elif view_setting.startswith('cano'):
+            cano_center = self.dataset.cano_bounds.mean(0)
+            extr = np.identity(4, np.float32)
+            extr[:3, 3] = -cano_center
+            rot_x = np.identity(4, np.float32)
+            rot_x[:3, :3] = cv.Rodrigues(np.array([np.pi, 0, 0], np.float32))[0]
+            extr = rot_x @ extr
+            f_len = 5000
+            extr[2, 3] += f_len / 512
+            intr = np.array([[f_len, 0, 512], [0, f_len, 512], [0, 0, 1]], np.float32)
+            # item = self.dataset.getitem(idx,
+            #                             training = False,
+            #                             extr = extr,
+            #                             intr = intr,
+            #                             img_w = 1024,
+            #                             img_h = 1024)
+            img_w, img_h = 1024, 1024
+            # item['live_smpl_v'] = item['cano_smpl_v']
+            # item['cano2live_jnt_mats'] = torch.eye(4, dtype = torch.float32)[None].expand(item['cano2live_jnt_mats'].shape[0], -1, -1)
+            # item['live_bounds'] = item['cano_bounds']
+        else:
+            raise ValueError('Invalid view setting for animation!')
+        return extr, intr, img_w, img_h
+    def save_images(self, keys, output, output_dir, item):
+        for key in keys:
+            if key not in output:
+                continue
+            os.makedirs(output_dir + f'/{key}', exist_ok=True)
+            map = output[key]
+            map.float().clip_(0., 1.)
+            map = (map * 255).to(torch.uint8).cpu().numpy()
+            cv.imwrite(output_dir + f'/{key}/{key}_%08d.jpg' % item['data_idx'], map)
 
     @torch.no_grad()
     def test(self):
@@ -643,33 +825,20 @@ class AvatarTrainer:
             training_dataset.compute_pca(n_components = self.opt['test']['n_pca'])
         if 'pose_data' in self.opt['test']:
             testing_dataset = PoseDataset(**self.opt['test']['pose_data'], smpl_shape = training_dataset.smpl_data['betas'][0])
-            dataset_name = testing_dataset.dataset_name
-            seq_name = testing_dataset.seq_name
         else:
             testing_dataset = MvRgbDataset(**self.opt['test']['data'], training = False, load_smpl_pos_map = True)
-            dataset_name = 'training'
-            seq_name = ''
-
             self.opt['test']['n_pca'] = -1  # cancel PCA for training pose reconstruction
 
         self.dataset = testing_dataset
         iter_idx = self.load_ckpt(self.opt['test']['prev_ckpt'], False)[1]
-
-        output_dir = self.opt['test'].get('output_dir', None)
-        if output_dir is None:
-            view_setting = config.opt['test'].get('view_setting', 'free')
-            if view_setting == 'camera':
-                view_folder = 'cam_%04d' % config.opt['test']['render_view_idx']
-            else:
-                view_folder = view_setting + '_view'
-            exp_name = os.path.basename(os.path.dirname(self.opt['test']['prev_ckpt']))
-            output_dir = f'./test_results/{training_dataset.subject_name}/{exp_name}/{dataset_name}_{seq_name}_{view_folder}' + '/batch_%06d' % iter_idx
+        exp_name = os.path.basename(os.path.dirname(self.opt['test']['prev_ckpt']))
+        output_dir = self.gen_output_dir(config.opt["mode"], exp_name, testing_dataset, iter_idx)
 
         use_pca = self.opt['test'].get('n_pca', -1) >= 1
         if use_pca:
             output_dir += '/pca_%d_sigma_%.2f' % (self.opt['test'].get('n_pca', -1), float(self.opt['test'].get('sigma_pca', 1.)))
         else:
-            output_dir += '/vanilla'
+            output_dir += "/{}".format(self.opt['test'].get("render_layers", ["both"])[0])
         print('# Output dir: \033[1;31m%s\033[0m' % output_dir)
 
         os.makedirs(output_dir + '/live_skeleton', exist_ok = True)
@@ -677,11 +846,7 @@ class AvatarTrainer:
         os.makedirs(output_dir + '/mask_map', exist_ok = True)
         os.makedirs(output_dir + '/label_rgb_map', exist_ok=True)
 
-        geo_renderer = None
-        item_0 = self.dataset.getitem(0, training = False)
-        object_center = item_0['live_bounds'].mean(0)
-        global_orient = item_0['global_orient'].cpu().numpy() if isinstance(item_0['global_orient'], torch.Tensor) else item_0['global_orient']
-        global_orient = cv.Rodrigues(global_orient)[0]
+        global_orient, object_center = self.get_global_orient_center()
         # print('object_center: ', object_center.tolist())
         # print('global_orient: ', global_orient.tolist())
         # # exit(1)
@@ -694,95 +859,13 @@ class AvatarTrainer:
         if self.opt['test'].get('fix_hand', False):
             self.avatar_net.generate_mean_hands()
         log_time = False
-
+        view_setting = config.opt['test'].get('view_setting', 'free')
+        extr, intr, img_w, img_h = self.get_render_setting(view_setting, config.opt["mode"], object_center, global_orient)
+        getitem_func = self.dataset.getitem_fast if hasattr(self.dataset, 'getitem_fast') else self.dataset.getitem
         for idx in tqdm(range(data_num), desc = 'Rendering avatars...'):
             if log_time:
                 time_start.record()
                 time_start_all.record()
-
-            img_scale = self.opt['test'].get('img_scale', 1.0)
-            view_setting = config.opt['test'].get('view_setting', 'free')
-            if view_setting == 'camera':
-                # training view setting
-                cam_id = config.opt['test']['render_view_idx']
-                intr = self.dataset.intr_mats[cam_id].copy()
-                intr[:2] *= img_scale
-                extr = self.dataset.extr_mats[cam_id].copy()
-                img_h, img_w = int(self.dataset.img_heights[cam_id] * img_scale), int(self.dataset.img_widths[cam_id] * img_scale)
-            elif view_setting.startswith('free'):
-                # free view setting
-                # frame_num_per_circle = 360
-                frame_num_per_circle = 216
-                rot_Y = (idx % frame_num_per_circle) / float(frame_num_per_circle) * 2 * np.pi
-
-                extr = visualize_util.calc_free_mv(object_center,
-                                                   tar_pos = np.array([0, 0, 2.5]),
-                                                   rot_Y = rot_Y,
-                                                   rot_X = 0.3 if view_setting.endswith('bird') else 0.,
-                                                   global_orient = global_orient if self.opt['test'].get('global_orient', False) else None)
-                intr = np.array([[1100, 0, 512], [0, 1100, 512], [0, 0, 1]], np.float32)
-                intr[:2] *= img_scale
-                img_h = int(1024 * img_scale)
-                img_w = int(1024 * img_scale)
-            elif view_setting.startswith('front'):
-                # front view setting
-                extr = visualize_util.calc_free_mv(object_center,
-                                                   tar_pos = np.array([0, 0, 2.5]),
-                                                   rot_Y = 0.,
-                                                   rot_X = 0.3 if view_setting.endswith('bird') else 0.,
-                                                   global_orient = global_orient if self.opt['test'].get('global_orient', False) else None)
-                intr = np.array([[1100, 0, 512], [0, 1100, 512], [0, 0, 1]], np.float32)
-                intr[:2] *= img_scale
-                img_h = int(1024 * img_scale)
-                img_w = int(1024 * img_scale)
-            elif view_setting.startswith('back'):
-                # back view setting
-                extr = visualize_util.calc_free_mv(object_center,
-                                                   tar_pos = np.array([0, 0, 2.5]),
-                                                   rot_Y = np.pi,
-                                                   rot_X = 0.5 * np.pi / 4. if view_setting.endswith('bird') else 0.,
-                                                   global_orient = global_orient if self.opt['test'].get('global_orient', False) else None)
-                intr = np.array([[1100, 0, 512], [0, 1100, 512], [0, 0, 1]], np.float32)
-                intr[:2] *= img_scale
-                img_h = int(1024 * img_scale)
-                img_w = int(1024 * img_scale)
-            elif view_setting.startswith('moving'):
-                # moving camera setting
-                extr = visualize_util.calc_free_mv(object_center,
-                                                   # tar_pos = np.array([0, 0, 3.0]),
-                                                   # rot_Y = -0.3,
-                                                   tar_pos = np.array([0, 0, 2.5]),
-                                                   rot_Y = 0.,
-                                                   rot_X = 0.3 if view_setting.endswith('bird') else 0.,
-                                                   global_orient = global_orient if self.opt['test'].get('global_orient', False) else None)
-                intr = np.array([[1100, 0, 512], [0, 1100, 512], [0, 0, 1]], np.float32)
-                intr[:2] *= img_scale
-                img_h = int(1024 * img_scale)
-                img_w = int(1024 * img_scale)
-            elif view_setting.startswith('cano'):
-                cano_center = self.dataset.cano_bounds.mean(0)
-                extr = np.identity(4, np.float32)
-                extr[:3, 3] = -cano_center
-                rot_x = np.identity(4, np.float32)
-                rot_x[:3, :3] = cv.Rodrigues(np.array([np.pi, 0, 0], np.float32))[0]
-                extr = rot_x @ extr
-                f_len = 5000
-                extr[2, 3] += f_len / 512
-                intr = np.array([[f_len, 0, 512], [0, f_len, 512], [0, 0, 1]], np.float32)
-                # item = self.dataset.getitem(idx,
-                #                             training = False,
-                #                             extr = extr,
-                #                             intr = intr,
-                #                             img_w = 1024,
-                #                             img_h = 1024)
-                img_w, img_h = 1024, 1024
-                # item['live_smpl_v'] = item['cano_smpl_v']
-                # item['cano2live_jnt_mats'] = torch.eye(4, dtype = torch.float32)[None].expand(item['cano2live_jnt_mats'].shape[0], -1, -1)
-                # item['live_bounds'] = item['cano_bounds']
-            else:
-                raise ValueError('Invalid view setting for animation!')
-
-            getitem_func = self.dataset.getitem_fast if hasattr(self.dataset, 'getitem_fast') else self.dataset.getitem
             item = getitem_func(
                 idx,
                 training = False,
@@ -793,13 +876,6 @@ class AvatarTrainer:
             )
             items = to_cuda(item, add_batch = False)
 
-            if view_setting.startswith('moving') or view_setting == 'free_moving':
-                current_center = items['live_bounds'].cpu().numpy().mean(0)
-                delta = current_center - object_center
-
-                object_center[0] += delta[0]
-                # object_center[1] += delta[1]
-                # object_center[2] += delta[2]
 
             if log_time:
                 time_end.record()
@@ -849,7 +925,7 @@ class AvatarTrainer:
                 print('Rendering pose conditions costs %.4f secs' % (time_start.elapsed_time(time_end) / 1000.))
                 time_start.record()
 
-            output = self.avatar_net.render(items, bg_color = self.bg_color,
+            output = self.avatar_net.render_filtered(items, bg_color = self.bg_color,
                                             use_pca = use_pca, layers=self.opt['test'].get("render_layers", None))
             if log_time:
                 time_end.record()
@@ -857,29 +933,26 @@ class AvatarTrainer:
                 print('Rendering avatar costs %.4f secs' % (time_start.elapsed_time(time_end) / 1000.))
                 time_start.record()
 
+            if view_setting.startswith('moving') or view_setting == 'free_moving':
+                current_center = items['live_bounds'].cpu().numpy().mean(0)
+                delta = current_center - object_center
+
+                object_center[0] += delta[0]
+                extr, intr, img_w, img_h = self.get_render_setting(view_setting, config.opt["mode"], object_center, global_orient)
+                
+                # object_center[1] += delta[1]
+                # object_center[2] += delta[2]
+
             rgb_map = output['rgb_map']
             rgb_map.clip_(0., 1.)
             rgb_map = (rgb_map * 255).to(torch.uint8).cpu().numpy()
             cv.imwrite(output_dir + '/rgb_map/%08d.jpg' % item['data_idx'], rgb_map)
+        
+            self.save_images(["offset_map", "mask_map", 
+                              "label_rgb_map", "depth_map", 
+                              "body_mask", "cloth_mask_080", "cloth_mask_098", "body_visible_mask",
+                              "cloth_rgb", "body_rgb"], output, output_dir, item)
             
-
-            if 'offset_map' in output:
-                offset_map = output['offset_map']
-                offset_map.clip_(0., 1)
-                offset_map = (offset_map * 255).to(torch.uint8).cpu().numpy()
-                cv.imwrite(output_dir + '/offset_map/offset_%08d.jpg' % item['data_idx'], offset_map)
-            if 'mask_map' in output:
-                os.makedirs(output_dir + '/mask_map', exist_ok = True)
-                mask_map = output['mask_map'][:, :, 0]
-                mask_map.clip_(0., 1.)
-                mask_map = (mask_map * 255).to(torch.uint8)
-                cv.imwrite(output_dir + '/mask_map/%08d.png' % item['data_idx'], mask_map.cpu().numpy())
-            if 'label_rgb_map' in output:
-                os.makedirs(output_dir + '/label_rgb_map', exist_ok = True)
-                label_rgb_map = output['label_rgb_map']
-                label_rgb_map.clip_(0., 1.)
-                label_rgb_map = (label_rgb_map * 255).to(torch.uint8)
-                cv.imwrite(output_dir + '/label_rgb_map/%08d.png' % item['data_idx'], label_rgb_map.cpu().numpy())
             if self.opt['test'].get('save_tex_map', False):
                 os.makedirs(output_dir + '/cano_tex_map', exist_ok = True)
                 cano_tex_map = output['cano_tex_map']
@@ -934,6 +1007,175 @@ class AvatarTrainer:
                 print('[WARNING] Cannot find "avatar_net" from the optimizer checkpoint!')
 
         return epoch_idx, iter_idx
+    
+    def load_ckpt_net(self, path, avatar_net, load_optm = True):
+        print('Loading networks from ', path + '/net.pt')
+        net_dict = torch.load(path + '/net.pt')
+        if 'avatar_net' in net_dict:
+            avatar_net.load_state_dict(net_dict['avatar_net'])
+        else:
+            print('[WARNING] Cannot find "avatar_net" from the network checkpoint!')
+        epoch_idx = net_dict['epoch_idx']
+        iter_idx = net_dict['iter_idx']
+        if load_optm and os.path.exists(path + '/optm.pt'):
+            print('Loading optimizers from ', path + '/optm.pt')
+            optm_dict = torch.load(path + '/optm.pt')
+            if 'avatar_net' in optm_dict:
+                self.optm.load_state_dict(optm_dict['avatar_net'])
+            else:
+                print('[WARNING] Cannot find "avatar_net" from the optimizer checkpoint!')
+        return epoch_idx, iter_idx
+    
+    @torch.no_grad()
+    def exchange_cloth(self):
+        self.avatar_net.eval()
+
+        dataset_module = self.opt['train'].get('dataset', 'MvRgbDatasetAvatarReX')
+        MvRgbDataset = importlib.import_module('dataset.dataset_mv_rgb').__getattribute__(dataset_module)
+
+        testing_dataset_cloth = MvRgbDataset(**self.opt['exchange_cloth']['data_cloth'], training = False, load_smpl_pos_map = True)
+        testing_dataset_body = MvRgbDataset(**self.opt['exchange_cloth']['data_body'], training = False, load_smpl_pos_map = True)
+        self.dataset_cloth = testing_dataset_cloth 
+        self.dataset_body = testing_dataset_body
+        self.dataset = testing_dataset_body
+        dataset_name = 'training'
+        seq_name = ''
+        cloth_avatar_net = MultiLAvatarNet(self.opt['model'],
+                                    self.opt['exchange_cloth']['data_cloth'].get('layers', None), data_dir=self.opt['exchange_cloth']['data_cloth']["data_dir"]).to(config.device)
+        _, iter_idx = self.load_ckpt_net(self.opt['exchange_cloth']['cloth_ckpt'], cloth_avatar_net, False)
+        body_avatar_net = MultiLAvatarNet(self.opt['model'],
+                                    self.opt['exchange_cloth']['data_body'].get('layers', None), data_dir=self.opt['exchange_cloth']['data_body']["data_dir"]).to(config.device)
+        self.load_ckpt_net(self.opt['exchange_cloth']['body_ckpt'], body_avatar_net, False)
+        combined_avatar_net = CombinedAvatarNet(self.opt['exchange_cloth'], body_avatar_net, cloth_avatar_net)
+
+        output_dir = self.opt['exchange_cloth'].get('output_dir', None)
+        if output_dir is None:
+            view_setting = config.opt['exchange_cloth'].get('view_setting', 'free')
+            view_folder = 'cam_%04d' % config.opt['exchange_cloth']['render_view_idx']
+            exp_name = os.path.basename(os.path.dirname(self.opt['exchange_cloth']['body_ckpt'] + self.opt['exchange_cloth']['cloth_ckpt']))
+            output_dir = f'./exchange_results/{testing_dataset_body.subject_name}/{exp_name}/{dataset_name}_{seq_name}_{view_folder}' + '/batch_%06d' % iter_idx
+
+        use_pca = self.opt['test'].get('n_pca', -1) >= 1
+        if use_pca:
+            output_dir += '/pca_%d_sigma_%.2f' % (self.opt['test'].get('n_pca', -1), float(self.opt['test'].get('sigma_pca', 1.)))
+        else:
+            output_dir += "/{}".format(self.opt['exchange_cloth'].get("render_layers", ["both"])[0])
+        print('# Output dir: \033[1;31m%s\033[0m' % output_dir)
+
+        os.makedirs(output_dir + '/live_skeleton', exist_ok = True)
+        os.makedirs(output_dir + '/rgb_map', exist_ok = True)
+        os.makedirs(output_dir + '/mask_map', exist_ok = True)
+        os.makedirs(output_dir + '/label_rgb_map', exist_ok=True)
+
+        geo_renderer = None
+        item_0 = self.dataset.getitem(0, training = False)
+        object_center = item_0['live_bounds'].mean(0)
+        global_orient = item_0['global_orient'].cpu().numpy() if isinstance(item_0['global_orient'], torch.Tensor) else item_0['global_orient']
+        global_orient = cv.Rodrigues(global_orient)[0]
+  
+        time_start = torch.cuda.Event(enable_timing = True)
+        time_start_all = torch.cuda.Event(enable_timing = True)
+        time_end = torch.cuda.Event(enable_timing = True)
+
+        data_num = len(self.dataset)
+    
+        log_time = False
+
+        for idx in tqdm(range(data_num), desc = 'Rendering avatars...'):
+            if log_time:
+                time_start.record()
+                time_start_all.record()
+
+            img_scale = self.opt['exchange_cloth'].get('img_scale', 1.0)
+            view_setting = config.opt['exchange_cloth'].get('view_setting', 'free')
+
+            # training view setting
+            cam_id = config.opt['exchange_cloth']['render_view_idx']
+            intr = self.dataset.intr_mats[cam_id].copy()
+            intr[:2] *= img_scale
+            extr = self.dataset.extr_mats[cam_id].copy()
+            img_h, img_w = int(self.dataset.img_heights[cam_id] * img_scale), int(self.dataset.img_widths[cam_id] * img_scale)
+
+
+            getitem_func_body = self.dataset_body.getitem_fast if hasattr(self.dataset, 'getitem_fast') else self.dataset_body.getitem
+            item_body = getitem_func_body(
+                idx,
+                training = False,
+                extr = extr,
+                intr = intr,
+                img_w = img_w,
+                img_h = img_h
+            )
+            items_body = to_cuda(item_body, add_batch = False)
+
+            getitem_func_cloth = self.dataset_cloth.getitem_fast if hasattr(self.dataset, 'getitem_fast') else self.dataset_cloth.getitem
+            item_cloth = getitem_func_cloth(
+                idx,
+                training = False,
+                extr = extr,
+                intr = intr,
+                img_w = img_w,
+                img_h = img_h
+            )
+            items_cloth = to_cuda(item_cloth, add_batch = False)
+
+            if view_setting.startswith('moving') or view_setting == 'free_moving':
+                current_center = items_body['live_bounds'].cpu().numpy().mean(0)
+                delta = current_center - object_center
+
+                object_center[0] += delta[0]
+                # object_center[1] += delta[1]
+                # object_center[2] += delta[2]
+
+            if log_time:
+                time_end.record()
+                torch.cuda.synchronize()
+                print('Loading data costs %.4f secs' % (time_start.elapsed_time(time_end) / 1000.))
+                time_start.record()
+
+            if log_time:
+                time_end.record()
+                torch.cuda.synchronize()
+                print('Rendering skeletons costs %.4f secs' % (time_start.elapsed_time(time_end) / 1000.))
+                time_start.record()
+
+            if log_time:
+                time_end.record()
+                torch.cuda.synchronize()
+                print('Rendering pose conditions costs %.4f secs' % (time_start.elapsed_time(time_end) / 1000.))
+                time_start.record()
+
+            output = combined_avatar_net.render(items_body, items_cloth, bg_color = self.bg_color,
+                                            use_pca = use_pca, layers=self.opt['exchange_cloth'].get("render_layers", None))
+            if log_time:
+                time_end.record()
+                torch.cuda.synchronize()
+                print('Rendering avatar costs %.4f secs' % (time_start.elapsed_time(time_end) / 1000.))
+                time_start.record()
+
+            rgb_map = output['rgb_map']
+            rgb_map.clip_(0., 1.)
+            rgb_map = (rgb_map * 255).to(torch.uint8).cpu().numpy()
+            cv.imwrite(output_dir + '/rgb_map/%08d.jpg' % items_body['data_idx'], rgb_map)
+        
+            self.save_images(["offset_map", "mask_map", "cloth_mask_map", "body_mask_map"], output, output_dir, item_body)
+            if self.opt['test'].get('save_tex_map', False):
+                os.makedirs(output_dir + '/cano_tex_map', exist_ok = True)
+                cano_tex_map = output['cano_tex_map']
+                cano_tex_map.clip_(0., 1.)
+                cano_tex_map = (cano_tex_map * 255).to(torch.uint8)
+                cv.imwrite(output_dir + '/cano_tex_map/%08d.jpg' % item_body['data_idx'], cano_tex_map.cpu().numpy())
+
+            if self.opt['test'].get('save_ply', False):
+                save_gaussians_as_ply(output_dir + '/posed_gaussians/%08d.ply' % item_body['data_idx'], output['posed_gaussians'])
+
+            if log_time:
+                time_end.record()
+                torch.cuda.synchronize()
+                print('Saving images costs %.4f secs' % (time_start.elapsed_time(time_end) / 1000.))
+                print('Animating one frame costs %.4f secs' % (time_start_all.elapsed_time(time_end) / 1000.))
+
+            torch.cuda.empty_cache()
 
 
 if __name__ == '__main__':
@@ -961,5 +1203,7 @@ if __name__ == '__main__':
         trainer.train()
     elif config.opt['mode'] == 'test':
         trainer.test()
+    elif config.opt['mode'] == 'exchange_cloth':
+        trainer.exchange_cloth()
     else:
         raise NotImplementedError('Invalid running mode!')

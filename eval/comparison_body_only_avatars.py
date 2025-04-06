@@ -9,16 +9,16 @@ import shutil
 from eval.score import *
 
 cam_id = 18
-ours_dir = '/home/zhiychen/Desktop/AnimatableGaussians/test_results/185/Outer_tightness_no_reg_with_laplacian/training__cam_0000/batch_146880/vanilla/rgb_map'
-AG_dir = '/home/zhiychen/Desktop/AnimatableGaussians/test_results/185/Outer_precise/training__cam_0000/batch_106080/vanilla/rgb_map'
+ours_dir = '/local/home/zhiychen/AnimatableGaussain/test_results/185_split_cloth/neutral_new_pose_param/training__cam_0001/batch_125141/both/rgb_map'
+AG_dir = '/local/home/zhiychen/AnimatableGaussain/test_results/185_filtered_4/opacity_1/cam_0001/batch_156601/both/rgb_map'
 # posevocab_dir = './test_results/subject00/posevocab/testing__cam_%03d/rgb_map' % cam_id
 # tava_dir = './test_results/subject00/tava/cam_%03d' % cam_id
 # arah_dir = './test_results/subject00/arah/cam_%03d' % cam_id
 # slrf_dir = './test_results/subject00/slrf/cam_%03d' % cam_id
-gt_dir = '/home/zhiychen/Desktop/test_data/multiviewRGC/4d_dress/00185/Outer/0004/images' 
-mask_dir = '/home/zhiychen/Desktop/test_data/multiviewRGC/4d_dress/00185/Outer/0004/masks'
+gt_dir = '/data/zhiychen/AnimatableGaussain/test_data/multiviewRGC/4d_dress/00185/Inner/0016/images' 
+mask_dir = '/data/zhiychen/AnimatableGaussain/test_data/multiviewRGC/4d_dress/00185/Inner/0016/masks'
 
-frame_list = list(range(0, 300, 1))
+frame_list = list(range(0, 310, 1))
 
 
 if __name__ == '__main__':
@@ -49,7 +49,7 @@ if __name__ == '__main__':
         AG_img = (cv.imread(AG_dir + '/%08d.jpg' % frame_id, cv.IMREAD_UNCHANGED) / 255.).astype(np.float32)
         gt_img = (cv.imread(gt_dir + '/%05d.png' % frame_id, cv.IMREAD_UNCHANGED) / 255.).astype(np.float32)
         mask_img = cv.imread(mask_dir + '/%05d.png' % frame_id, cv.IMREAD_UNCHANGED) > 128
-        gt_img[~mask_img] = 1.
+        gt_img[~mask_img] = 0.5
 
         ours_img_cropped, AG_img_cropped, gt_img_cropped = \
             crop_image(
@@ -65,7 +65,7 @@ if __name__ == '__main__':
             )
 
         cv.imwrite('./tmp_quant/ours/%08d.png' % frame_id, (ours_img_cropped * 255).astype(np.uint8))
-        cv.imwrite('./tmp_quant/AG/%08d.png' % frame_id, (ours_img_cropped * 255).astype(np.uint8))
+        cv.imwrite('./tmp_quant/AG/%08d.png' % frame_id, (AG_img_cropped * 255).astype(np.uint8))
         # cv.imwrite('./tmp_quant/posevocab/%08d.png' % frame_id, (posevocab_img_cropped * 255).astype(np.uint8))
         # cv.imwrite('./tmp_quant/slrf/%08d.png' % frame_id, (slrf_img_cropped * 255).astype(np.uint8))
         # cv.imwrite('./tmp_quant/tava/%08d.png' % frame_id, (tava_img_cropped * 255).astype(np.uint8))

@@ -6,7 +6,8 @@ import numpy as np
 import cv2 as cv
 import torch
 from torch.utils.data import Dataset
-
+import json
+from numpy.linalg import inv
 import smplx
 import config
 import utils.nerf_util as nerf_util
@@ -29,6 +30,8 @@ class MvRgbDatasetBase(Dataset):
         mode = '3dgs',
         layers = None,
         use_label = False,
+        use_body_label = False,
+        use_normal = False,
     ):
         super(MvRgbDatasetBase, self).__init__()
 
@@ -42,6 +45,8 @@ class MvRgbDatasetBase(Dataset):
         self.load_smpl_nml_map = load_smpl_nml_map
         self.mode = mode  # '3dgs' or 'nerf'
         self.use_label = use_label
+        self.use_body_label = use_body_label
+        self.use_normal = use_normal
         self.load_cam_data()
         self.load_smpl_data()
         if layers is None:
@@ -50,7 +55,8 @@ class MvRgbDatasetBase(Dataset):
             self.smpl_pos_map = {}
             for layer in layers:
                 self.smpl_pos_map[layer] = config.opt.get("smpl_pos_map", "smpl_pos_map") + f"_{layer}"
-        self.smpl_model = smplx.SMPLX(model_path = config.PROJ_DIR + '/smpl_files/smplx', gender = 'female', use_pca = True, num_pca_comps = 12, flat_hand_mean = True, batch_size = 1)
+        self.smpl_model = smplx.SMPLX(model_path = config.PROJ_DIR + '/smpl_files/smplx', gender = 'neutral', use_pca = True, num_pca_comps = 12, flat_hand_mean = True, batch_size = 1)
+        self.smpl_model_fit = smplx.SMPLX(model_path = config.PROJ_DIR + '/smpl_files/smplx', gender = 'neutral', use_pca = True, num_pca_comps = 12, flat_hand_mean = False, batch_size = 1)
 
         pose_list = list(range(self.smpl_data['body_pose'].shape[0]))
         if frame_range is not None:
@@ -128,7 +134,7 @@ class MvRgbDatasetBase(Dataset):
 
         # SMPL
         with torch.no_grad():
-            live_smpl = self.smpl_model.forward(
+            live_smpl = self.smpl_model_fit.forward(
                 betas = self.smpl_data['betas'][0][None],
                 global_orient = self.smpl_data['global_orient'][pose_idx][None],
                 transl = self.smpl_data['transl'][pose_idx][None],
@@ -146,7 +152,7 @@ class MvRgbDatasetBase(Dataset):
                 jaw_pose = self.smpl_data['jaw_pose'][pose_idx][None],
                 expression = self.smpl_data['expression'][pose_idx][None],
             )
-            live_smpl_woRoot = self.smpl_model.forward(
+            live_smpl_woRoot = self.smpl_model_fit.forward(
                 betas = self.smpl_data['betas'][0][None],
                 body_pose = self.smpl_data['body_pose'][pose_idx][None],
                 jaw_pose = self.smpl_data['jaw_pose'][pose_idx][None],
@@ -224,6 +230,10 @@ class MvRgbDatasetBase(Dataset):
                 if self.use_label:
                     label_img = (self.load_label_image(pose_idx, view_idx) / 255.).astype(np.float32)
                     data_item["label_img"] = label_img
+                if self.use_body_label:
+                    label_body_img = (self.load_label_body_image(pose_idx, view_idx) / 255.).astype(np.float32)
+                    data_item["label_body_img"] = label_body_img
+                if self.use_normal:
                     label_body_img = (self.load_label_body_image(pose_idx, view_idx) / 255.).astype(np.float32)
                     data_item["label_body_img"] = label_body_img
             elif self.mode == 'nerf':
@@ -295,6 +305,10 @@ class MvRgbDatasetBase(Dataset):
     
     def load_label_body_image(self, pose_idx, view_idx):
         raise NotImplementedError
+
+    def load_label_body_cover_image(self, pose_idx, view_idx):
+        raise NotImplementedError
+
     
     @staticmethod
     def get_boundary_mask(mask, kernel_size = 5):
@@ -368,7 +382,9 @@ class MvRgbDataset4DDress(MvRgbDatasetBase):
         load_smpl_nml_map = False,
         mode = '3dgs',
         layers = None,
-        use_label = False
+        use_label = False,
+        use_body_label = False,
+        use_normal = False,
     ):
         super(MvRgbDataset4DDress, self).__init__(
             data_dir,
@@ -380,7 +396,9 @@ class MvRgbDataset4DDress(MvRgbDatasetBase):
             load_smpl_nml_map,
             mode,
             layers,
-            use_label
+            use_label,
+            use_body_label,
+            use_normal,
         )
         if subject_name is None:
             self.subject_name = os.path.basename(os.path.dirname(self.data_dir))
@@ -409,7 +427,9 @@ class MvRgbDataset4DDress(MvRgbDatasetBase):
                 extr_mat[:3, :] = camera["extrinsics"]
                 extr_mats.append(extr_mat)
 
-                intr_mats.append(camera["intrinsics"])
+                intr_mat = np.identity(3, np.float32)
+                intr_mat[:, :] = camera["intrinsics"]
+                intr_mats.append(intr_mat)
 
         self.cam_names, self.img_widths, self.img_heights, self.extr_mats, self.intr_mats \
             = cam_names, img_widths, img_heights, extr_mats, intr_mats
@@ -434,7 +454,84 @@ class MvRgbDataset4DDress(MvRgbDatasetBase):
         # label_img = cv.imread(os.path.join(self.data_dir, cam_name,
         #                                    "labels", '%05d.png' % pose_idx), cv.IMREAD_UNCHANGED)
         mask_img = cv.imread(os.path.join(self.data_dir, cam_name, "masks", '%05d.png' % pose_idx), cv.IMREAD_UNCHANGED)
-        mask_img = mask_img[:, :, 0]
+        if len(mask_img.shape) > 2:
+            mask_img = mask_img[:, :, 0]
+        # color_img = np.concatenate([color_img, np.expand_dims(label_img, axis=2)], axis=2)
+        # Use partial image
+        # if self.layers is None:
+        #     mask_img = cv.imread(os.path.join(self.data_dir, cam_name,
+        #                                     "masks", '%05d.png' % pose_idx), cv.IMREAD_UNCHANGED)
+        # else:
+        #     selected_gray = []
+        #     label_img = cv.imread(os.path.join(self.data_dir, cam_name,
+        #                                     "labels", '%05d.png' % pose_idx), cv.IMREAD_GRAYSCALE)
+        #     for layer in self.layers:
+        #         selected_gray.append(self.masklabel[layer])
+        #     mask_img = np.isin(label_img, selected_gray).astype(np.uint8) * 255
+        return color_img, mask_img
+
+class MvRgbDatasetOther(MvRgbDatasetBase):
+    def __init__(
+        self,
+        data_dir,
+        frame_range = None,
+        used_cam_ids = None,
+        training = True,
+        subject_name = None,
+        load_smpl_pos_map = False,
+        load_smpl_nml_map = False,
+        mode = '3dgs',
+    ):
+        super(MvRgbDatasetOther, self).__init__(
+            data_dir,
+            frame_range,
+            used_cam_ids,
+            training,
+            subject_name,
+            load_smpl_pos_map,
+            load_smpl_nml_map,
+            mode,
+        )
+        if subject_name is None:
+            self.subject_name = os.path.basename(os.path.dirname(self.data_dir))
+
+    def load_cam_data(self):
+        import csv
+        cam_names = []
+        extr_mats = []
+        intr_mats = []
+        img_widths = []
+        img_heights = []
+        cameras = glob.glob( os.path.join(self.data_dir,  "cameras", '*.json'),
+            recursive=True)
+        for camera_fn in cameras:
+            with open(camera_fn) as fp:
+                camera = json.load(fp)
+                cam_names.append(camera_fn.split("/")[-1].split(".")[0])
+                img_widths.append(1024)
+                img_heights.append(1024)
+
+                extr_mat = inv(camera["cam_param"])
+                extr_mats.append(extr_mat)
+                intr_mat = np.identity(3, np.float32)
+                intr_mat[0, 0] = 100000
+                intr_mat[1, 1] = 100000
+                intr_mat[0, 2] = 512
+                intr_mat[1, 2] = 512
+                intr_mats.append(intr_mat)
+
+        self.cam_names, self.img_widths, self.img_heights, self.extr_mats, self.intr_mats \
+            = cam_names, img_widths, img_heights, extr_mats, intr_mats
+        self.view_num = len(self.cam_names)
+
+    def load_color_mask_images(self, pose_idx, view_idx):
+        cam_name = self.cam_names[view_idx]
+        color_img = cv.imread(os.path.join(self.data_dir, cam_name, '%05d.png' % (pose_idx + 1)), cv.IMREAD_UNCHANGED)[:,:,:3]
+        # label_img = cv.imread(os.path.join(self.data_dir, cam_name,
+        #                                    "labels", '%05d.png' % pose_idx), cv.IMREAD_UNCHANGED)
+        mask_img = np.load(os.path.join(self.data_dir, cam_name, '%05d.npy' % (pose_idx + 1))).astype(np.float64) * 255
+        if len(mask_img.shape) > 2:
+            mask_img = mask_img[:, :, 0]
         # color_img = np.concatenate([color_img, np.expand_dims(label_img, axis=2)], axis=2)
         # Use partial image
         # if self.layers is None:

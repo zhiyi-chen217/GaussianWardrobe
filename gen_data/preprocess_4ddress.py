@@ -2,24 +2,28 @@ import glob
 import os
 import pickle
 import shutil
-
+import torch
 import numpy
 import numpy as np
-<<<<<<< HEAD
 import cv2 as cv
 import sys
+import trimesh
+from pytorch3d.renderer import PerspectiveCameras, RasterizationSettings, MeshRasterizer
+import json
+from pytorch3d.structures import Meshes
 sys.path.append("/local/home/zhiychen/AnimatableGaussain")
 from utils.sh_utils import RGB2GRAY
+from tqdm import tqdm
 
-SUBJECT = 127
-CAMERA = 76
-TAKES = [2, 4, 5, 6, 7, 8]
-LAYER = "Inner"
+SUBJECT = 185
+CAMERA = 4
+TAKES = [11, 12, 13, 14, 15, 17]
+LAYER = "Outer"
 SURFACE_LABEL = ['skin', 'upper', 'lower', 'hair', 'shoe', 'outer']
 SURFACE_LABEL_COLOR = np.array([[128, 128, 128], [255, 128, 0], [128, 0, 255], [180, 50, 50], [50, 180, 50], [0, 128, 255]])
 SURFACE_LABEL_GRAY = RGB2GRAY(SURFACE_LABEL_COLOR)
 MASK_LABEL = dict(zip(SURFACE_LABEL, SURFACE_LABEL_GRAY))
-
+camera_list = [4, 16, 28, 36, 41, 48, 52, 60, 69, 76, 84, 92]
 def read_all_png_camera(data_dir, png_type="images", png_prefix="", takes=TAKES, camera=CAMERA):
     png_list = []
     for take in takes:
@@ -31,31 +35,9 @@ def read_all_png_camera(data_dir, png_type="images", png_prefix="", takes=TAKES,
             png_list += glob.glob(
                 os.path.join(data_dir, '%05d' % SUBJECT, LAYER, f'Take{take}', "Capture", '%04d' % camera, png_type, f'{png_prefix}*.png'),
                 recursive=True)
-=======
-import torch
-import trimesh
-import cv2 as cv
-
-from pytorch3d.renderer import PerspectiveCameras, RasterizationSettings, MeshRasterizer
-
-from pytorch3d.structures import Meshes
-from tqdm import tqdm
-
-from utils.renderer import Renderer
-
-SUBJECT = 127
-CAMERA = 76
-TAKES = [i for i in range(17, 19)]
-LAYER = "Inner"
-def read_all_png_camera(data_dir, png_type="images", takes=TAKES, camera=CAMERA, layer=LAYER):
-    png_list = []
-    for take in takes:
-        png_list += glob.glob(
-            os.path.join(data_dir, '%05d' % SUBJECT, layer, f'Take{take}', "Capture", png_type, '%04d' % camera, '*.png'),
-            recursive=True)
->>>>>>> 14a949266bbc7b74d8c9ff85fca02ba2cfa460ea
     png_list.sort()
     return png_list
+
 def read_all_pose(data_dir):
     pose_list = []
     for take in TAKES:
@@ -64,43 +46,35 @@ def read_all_pose(data_dir):
             recursive=True)
     pose_list.sort()
     return pose_list
-def copy_png_to_folder(new_data_dir, png_list, png_type="images", camera=CAMERA, layer=LAYER):
-    if not os.path.exists(os.path.join(new_data_dir, '%05d' % SUBJECT,  layer, '%04d' % camera, png_type)):
-        os.makedirs(os.path.join(new_data_dir, '%05d' % SUBJECT, layer, '%04d' % camera, png_type))
-    for ind in range(len(png_list)):
-<<<<<<< HEAD
-        new_path = os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, '%04d' % camera, png_type, f'{ind:05d}.png')
-        # img = cv.imread(png_list[ind], cv.IMREAD_GRAYSCALE)
-        # new_img = np.full((img.shape[0], img.shape[1], 3), 128)
-        # new_img[img != 255] = 0
-        # new_img[img == MASK_LABEL["lower"]] = 255
-        # new_img[img == MASK_LABEL["upper"]] = 255
-        
-        # cv.imwrite(new_path, new_img) 
-=======
-        new_path = os.path.join(new_data_dir, '%05d' % SUBJECT, layer, '%04d' % camera, png_type, f'{ind:05d}.png')
->>>>>>> 14a949266bbc7b74d8c9ff85fca02ba2cfa460ea
-        shutil.copy(png_list[ind], new_path)
+def read_all_mesh(data_dir):
+    mesh_list = []
+    for take in TAKES:
+        mesh_list += glob.glob(
+            os.path.join(data_dir, '%05d' % SUBJECT, LAYER, f'Take{take}', "Semantic", "clothes", '*.ply'),
+            recursive=True)
+    mesh_list.sort()
+    return mesh_list 
 
-def copy_filter_label(new_data_dir, png_list, camera=CAMERA, png_type="labels"):
-    if not os.path.exists(os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, '%04d' % camera, png_type)):
-        os.makedirs(os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, '%04d' % camera, png_type))
+def copy_filter_label(new_data_dir, png_list, png_type="labels"):
+    if not os.path.exists(os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, '%04d' % CAMERA, png_type)):
+        os.makedirs(os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, '%04d' % CAMERA, png_type))
     for ind in range(len(png_list)):
-        new_path = os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, '%04d' % camera, png_type, f'{ind:05d}.png')
+        new_path = os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, '%04d' % CAMERA, png_type, f'{ind:05d}.png')
         img = cv.imread(png_list[ind], cv.IMREAD_GRAYSCALE)
-        new_img = np.full((img.shape[0], img.shape[1], 3), 0)
-        # new_img[img != 255] = 0
-        new_img[img == MASK_LABEL["lower"]] = 255
-        new_img[img == MASK_LABEL["upper"]] = 255
+        new_img = np.full((img.shape[0], img.shape[1], 3), 128)
+        new_img[img != 255] = 0
+        new_img[img == MASK_LABEL["outer"]] = 255
+        # new_img[img == MASK_LABEL["upper"]] = 255
         
         cv.imwrite(new_path, new_img) 
 
-def copy_pose_to_folder(new_data_dir, pose_list):
-    if not os.path.exists(os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, "pose")):
-        os.makedirs(os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, "pose"))
-    for ind in range(len(pose_list)):
-        new_path = os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, "pose", f'{ind:05d}.pkl')
-        shutil.copy(pose_list[ind], new_path)
+
+def copy_to_folder(new_data_dir, copy_list, folder_list, file_type):
+    os.makedirs(os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, *folder_list), exist_ok=True)
+    for ind in range(len(copy_list)):
+        new_path = os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, *folder_list, f'{ind:05d}.{file_type}')
+        shutil.copy(copy_list[ind], new_path)
+
 def combine_pose_to_npz(new_data_dir):
     regstr_list = []
     regstr_list += glob.glob(
@@ -156,16 +130,17 @@ def load_pytorch_cameras(camera_params, camera_list, image_shape):
     raster_settings = RasterizationSettings(image_size=image_shape, blur_radius=0.0, faces_per_pixel=1, max_faces_per_bin=80000)
     return camera_dict, raster_settings
 
-def render_mesh(mesh_path, camera_path, new_data_dir):
+def render_mesh(mesh_path, new_data_dir):
     mesh_list = glob.glob(
         os.path.join(mesh_path, '*.ply'),
         recursive=True)
-    os.makedirs(os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, '%04d' % CAMERA, "body_masks"), exist_ok=True)
     mesh_list.sort()
+    os.makedirs(os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, '%04d' % CAMERA, "body_masks"), exist_ok=True)
+    camera_path = os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, "cameras.pkl")
     cameras = pickle.load(open(camera_path, 'rb'))
     camera_dict, raster_settings = load_pytorch_cameras(cameras, ['%04d' % CAMERA], (1280, 940))
     capture_rasts = MeshRasterizer(cameras=camera_dict['%04d' % CAMERA], raster_settings=raster_settings)
-    for ind in  tqdm(range(len(mesh_list))):
+    for ind in tqdm(range(len(mesh_list))):
         mesh_path = mesh_list[ind]
         mesh = trimesh.load(mesh_path)
         scan_mesh = Meshes(torch.tensor(mesh.vertices, dtype=torch.float32).unsqueeze(0),
@@ -174,27 +149,48 @@ def render_mesh(mesh_path, camera_path, new_data_dir):
         capture_mask = capture_rasts(scan_mesh).pix_to_face[0, :, :, 0] > -1
         capture_mask = capture_mask.unsqueeze(-1).expand(-1, -1, 3)
         cv.imwrite(os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, '%04d' % CAMERA, "body_masks", f'{ind:05d}.png'), (capture_mask * 255).detach().cpu().numpy())
+def generate_camera_pkl(camera_path, camera_list, output_path):
+    with open(camera_path, 'r') as file:
+        camera_dict = json.load(file)
+        selected_camera_dict = {'%04d' % camera: camera_dict['%04d' % camera] for camera in camera_list}
+    with open(os.path.join(output_path, '%05d' % SUBJECT, LAYER, "cameras.pkl"), 'wb') as handle:
+        pickle.dump(selected_camera_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
+def render_covered_body_mask(new_data_dir):
+    body_mask_paths = glob.glob(os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, '%04d' % CAMERA, "body_masks", "*.png"))
+    body_mask_paths.sort()
+    body_cloth_mask_paths = glob.glob(os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, '%04d' % CAMERA, "labels", "*.png"))
+    body_cloth_mask_paths.sort()
+    os.makedirs(os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, '%04d' % CAMERA, "body_cover_masks"), exist_ok=True)
+    for ind in range(len(body_mask_paths)):
+        body_mask_path = body_mask_paths[ind]
+        body_cloth_mask_path = body_cloth_mask_paths[ind]
+        body_mask = (cv.imread(body_mask_path, cv.IMREAD_UNCHANGED)[:, :, 0] == 255)
+        body_cloth = cv.imread(body_cloth_mask_path, cv.IMREAD_UNCHANGED)
+        cloth_mask = (body_cloth[:, :, 0] == 255)
+        body_covered_mask = body_mask & cloth_mask
+        # save the cover mask to target folder
+        new_path = os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, '%04d' % CAMERA, "body_cover_masks", f'{ind:05d}.png')
+        new_img = np.zeros(body_cloth.shape)
+        new_img[body_covered_mask] = 255
+        cv.imwrite(new_path, new_img) 
+        
 if __name__ == '__main__':
-<<<<<<< HEAD
     data_dir = "/mnt/work/Clothes4D/SMLCHumans/"
     new_data_dir = "/data/zhiychen/AnimatableGaussain/train_data/multiviewRGC/4d_dress/"
-    label_data_dir = "/data/zhiychen/4ddress/"
+    generated_data_dir = "/data/zhiychen/4ddress/"
     # image_list = read_all_png_camera(data_dir, png_prefix="capture")
     # mask_list = read_all_png_camera(data_dir, png_type="masks", png_prefix="mask")
-=======
-    data_dir = "/home/Mocap2/Clothes4D/SMLCHumans/"
-    new_data_dir = "/home/zhiychen/Desktop/train_data/multiviewRGC/4d_dress/"
-    mesh_path = "/home/zhiychen/Desktop/train_data/multiviewRGC/4d_dress/00127/Inner/body_mesh"
-    camera_path = "/home/zhiychen/Desktop/train_data/multiviewRGC/4d_dress/00127/Inner/cameras.pkl"
-    render_mesh(mesh_path, camera_path, new_data_dir)
-    # image_list = read_all_png_camera(data_dir)
-    # mask_list = read_all_png_camera(data_dir, png_type="masks")
->>>>>>> 14a949266bbc7b74d8c9ff85fca02ba2cfa460ea
+    # copy_to_folder(new_data_dir, image_list, ['%04d' % CAMERA, "images"], "png")
+    # copy_to_folder(new_data_dir, mask_list,  ['%04d' % CAMERA, "masks"], "png")
     # pose_list = read_all_pose(data_dir)
-    # copy_png_to_folder(new_data_dir, image_list)
-    # copy_png_to_folder(new_data_dir, mask_list, png_type="masks")
-    # copy_pose_to_folder(new_data_dir, pose_list)
+    # copy_to_folder(new_data_dir, pose_list, ["pose"], "pkl")
     # combine_pose_to_npz(new_data_dir)
-    label_list = read_all_png_camera(label_data_dir, png_type="labels", png_prefix="label")
-    copy_filter_label(new_data_dir, label_list, png_type="labels_cloth")
-    print("end")
+    # all_camera_path = "/data/zhiychen/AnimatableGaussain/train_data/multiviewRGC/4d_dress/rgb_cameras.json"
+    # generate_camera_pkl(all_camera_path, camera_list, new_data_dir)
+    label_list = read_all_png_camera(generated_data_dir, png_type="labels", png_prefix="label")
+    copy_filter_label(new_data_dir, label_list, png_type="labels")
+
+    # mesh_path = os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, "body_mesh")
+    # render_mesh(mesh_path, new_data_dir)
+    # render_covered_body_mask(new_data_dir)
+    

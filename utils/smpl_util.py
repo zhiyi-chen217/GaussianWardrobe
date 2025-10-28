@@ -2,11 +2,31 @@ import torch
 import pytorch3d.ops
 
 import smplx
+import smplxd as smplx
 from utils.posevocab_custom_ops.nearest_face import nearest_face_pytorch3d, nearest_face
 from utils.knn import knn_gather
 import config
 
+def smplx_model(dataset_dir):
+    if "4d_dress" in dataset_dir:
+        #         smplx_body_model_fit = smplx.SMPLX('./smpl_files/smplx', gender='neutral', use_pca=False,
+        #                     flat_hand_mean=True, use_face_contour=True)
 
+        # smplx_body_model = smplx.SMPLX('./smpl_files/smplx', gender='neutral',
+        #                     use_pca=False, flat_hand_mean=True, use_face_contour=True)
+        smplx_body_model = smplx.SMPLX('./smpl_files/smplx', gender = 'neutral', use_pca = True, num_pca_comps = 12, flat_hand_mean = True, batch_size = 1)
+        smplx_body_model_fit = smplx.SMPLX('./smpl_files/smplx', gender = 'neutral', use_pca = True, num_pca_comps = 12, flat_hand_mean = False, batch_size = 1)
+
+    elif "ActorHQ" in dataset_dir:
+        smplx_body_model_fit = smplx.SMPLX('./smpl_files/smplx', gender='neutral', use_pca=False,
+                            flat_hand_mean=True, use_face_contour=True)
+
+        smplx_body_model = smplx.SMPLX('./smpl_files/smplx', gender='neutral',
+                            use_pca=False, flat_hand_mean=True, use_face_contour=True)
+    else:
+        smplx_body_model = smplx.SMPLX('./smpl_files/smplx', gender = 'neutral', use_pca = True, num_pca_comps = 12, flat_hand_mean = True, batch_size = 1)
+        smplx_body_model_fit = smplx.SMPLX('./smpl_files/smplx', gender = 'neutral', use_pca = True, num_pca_comps = 12, flat_hand_mean = False, batch_size = 1)
+    return smplx_body_model, smplx_body_model_fit
 def calc_blending_weight(query_pts, smpl_v, smpl_f, smpl_lbs = None, near_thres = 0.08, method = 'NN'):
     """
     :param query_pts: (B, N, 3)

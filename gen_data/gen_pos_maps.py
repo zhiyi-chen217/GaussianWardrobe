@@ -13,6 +13,7 @@ from trimesh.graph import neighbors
 import smplxd as smplx
 from network.volume import CanoBlendWeightVolume
 from utils.renderer.renderer_pytorch3d import Renderer
+from utils.smpl_util import smplx_model
 import config
 import pickle as pkl
 import pytorch3d.ops as ops
@@ -110,6 +111,9 @@ def generate_cano_maps(cano_smpl_v_dup, cano_smpl_attr_dup, attr):
     back_cano_attr_map = cv.flip(back_cano_attr_map, 1)
     cano_attr_map = np.concatenate([front_cano_attr_map, back_cano_attr_map], 1)
     cv.imwrite(data_dir + f'/{args.output_path}/cano_smpl_{attr}_map.exr', cano_attr_map)
+    # cano_attr_map_normalized = (cano_attr_map - cano_attr_map.min())
+    # cano_attr_map_normalized /= cano_attr_map_normalized.max()
+    # cv.imwrite(data_dir + f'/{args.output_path}/cano_smpl_{attr}_map_normalized.jpg', cano_attr_map_normalized * 255)
     return front_cano_pix_to_face, back_cano_pix_to_face, cano_attr_map
 
 
@@ -145,21 +149,26 @@ if __name__ == '__main__':
     arg_parser.add_argument('-rc', '--render_color', action='store_true', default=False, help='Render color or not.')
     arg_parser.add_argument('-ro', '--render_offset', action='store_true', default=False, help='Render offset or not.')
     arg_parser.add_argument('-lw', '--lbs_weight', default="cano_weight_volume", help='Render color or not.')
+    arg_parser.add_argument('-seq', '--sequence_name', default="smpl_params", help='Name of the rendering sequence')
+    arg_parser.add_argument('-d', '--data_dir', default="", help='specify the data directory')
     args = arg_parser.parse_args()
+    config.load_global_opt(args.config_path)
 
     opt = yaml.load(open(args.config_path, encoding = 'UTF-8'), Loader = yaml.FullLoader)
     dataset_module = opt['train'].get('dataset', 'MvRgbDatasetAvatarReX')
     MvRgbDataset = importlib.import_module('dataset.dataset_mv_rgb').__getattribute__(dataset_module)
-    dataset = MvRgbDataset(**opt['train']['data'])
-    data_dir, frame_list = dataset.data_dir, dataset.pose_list
+    if args.data_dir == "":
+        data_dir = config.opt["train"]["data"]["data_dir"]
+    else:
+        data_dir = args.data_dir
 
-    os.makedirs(data_dir + f'/{args.output_path}', exist_ok = True)
+    os.makedirs(data_dir + f'/{args.output_path}', exist_ok=True)
 
     cano_renderer = Renderer(map_size, map_size, shader_name = 'vertex_attribute')
 
-    smpl_model = smplx.SMPLX(config.PROJ_DIR + '/smpl_files/smplx', gender = 'neutral', use_pca = True, num_pca_comps = 12, flat_hand_mean = True, use_face_contour=False, batch_size = 1)
-    smpl_model_fit = smplx.SMPLX(config.PROJ_DIR + '/smpl_files/smplx', gender = 'neutral', use_pca = True, num_pca_comps = 12, flat_hand_mean = False, use_face_contour=False, batch_size = 1)
-    smpl_data = dict(np.load(data_dir + '/smpl_params.npz', allow_pickle=True))
+    smpl_model, smpl_model_fit = smplx_model(data_dir)
+    smpl_data = dict(np.load(data_dir + f'/{args.sequence_name}.npz', allow_pickle=True))
+    frame_list = [i for i in range(len(smpl_data["body_pose"]))]
     if args.lbs_weight != "cano_weight_volume":
         smpl_data["betas"] = np.zeros_like(smpl_data["betas"])
     smpl_data = {k: torch.from_numpy(v.astype(np.float32)) for k, v in smpl_data.items()}
@@ -207,8 +216,13 @@ if __name__ == '__main__':
     if args.render_color:
         if "cloth" in args.template_path:
             generate_cano_maps(cano_smpl_v_dup, cano_smpl_c_dup, attr="segment")
+        elif "smplx_upper" in args.template_path:
+            generate_cano_maps(cano_smpl_v_dup, cano_smpl_c_dup, attr="smplx_upper")
+        elif "smplx_lower" in args.template_path:
+            generate_cano_maps(cano_smpl_v_dup, cano_smpl_c_dup, attr="smplx_lower")
         else:
-            generate_cano_maps(cano_smpl_v_dup, cano_smpl_c_dup, attr="hand")
+            generate_cano_maps(cano_smpl_v_dup, cano_smpl_c_dup, attr="smplx_fix_offset")
+        
 
     # render offset map
     if args.render_offset:
@@ -226,15 +240,15 @@ if __name__ == '__main__':
     cano_smpl_mask = torch.linalg.norm(torch.from_numpy(cano_pos_map).to(torch.float32), dim=-1) > 0.
     pixel_idx = np.full(cano_pix_to_face_map.shape, -1, dtype=np.int64)
     pixel_idx[cano_smpl_mask] = np.arange(cano_smpl_mask.sum())
-    # print("Generate neighbor map")
-    # neighbor_idxs, neighbor_weights, with_neighbor = get_neighbors(pixel_idx, cano_smpl_mask, cano_pix_to_face_map, template)
-    # # save as npy file and use later
-    # with open(data_dir + f'/{args.output_path}/neighbor_idx.npy', 'wb') as f:
-    #     np.save(f, neighbor_idxs)
-    # with open(data_dir + f'/{args.output_path}/neighbor_weights.npy', 'wb') as f:
-    #     np.save(f, neighbor_weights)
-    # with open(data_dir + f'/{args.output_path}/with_neighbor.npy', 'wb') as f:
-    #     np.save(f, with_neighbor)
+    print("Generate neighbor map")
+    neighbor_idxs, neighbor_weights, with_neighbor = get_neighbors(pixel_idx, cano_smpl_mask, cano_pix_to_face_map, template)
+    # save as npy file and use later
+    with open(data_dir + f'/{args.output_path}/neighbor_idx.npy', 'wb') as f:
+        np.save(f, neighbor_idxs)
+    with open(data_dir + f'/{args.output_path}/neighbor_weights.npy', 'wb') as f:
+        np.save(f, neighbor_weights)
+    with open(data_dir + f'/{args.output_path}/with_neighbor.npy', 'wb') as f:
+        np.save(f, with_neighbor)
 
     # Generate mesh-like faces
     print("Generate face map")
@@ -255,6 +269,7 @@ if __name__ == '__main__':
     if using_template:
         weight_volume = CanoBlendWeightVolume(data_dir + f'/{args.lbs_weight}.npz')
         pts_lbs = weight_volume.forward_weight(torch.from_numpy(cano_pts)[None].cuda())[0]
+        verts_lbs = weight_volume.forward_weight(torch.from_numpy(cano_smpl_v)[None].cuda())[0]
         if args.lbs_weight != "cano_weight_volume":
             cano_offset = cano_offset_map[body_mask]
             save_weight_volume = CanoBlendWeightVolume(data_dir + f'/cano_weight_volume.npz')
@@ -271,6 +286,7 @@ if __name__ == '__main__':
     body_mask = torch.from_numpy(body_mask).cuda()
     cano_pts = torch.from_numpy(cano_pts).cuda()
     pts_lbs = pts_lbs.cuda()
+    verts_lbs = verts_lbs.cuda()
 
     for pose_idx in tqdm.tqdm(frame_list, desc = 'Generating positional maps...'):
         with torch.no_grad():
@@ -288,7 +304,9 @@ if __name__ == '__main__':
         cano2live_jnt_mats_woRoot = torch.matmul(live_smpl_woRoot.A.cuda(), inv_cano_smpl_A)[0]
         pt_mats = torch.einsum('nj,jxy->nxy', pts_lbs, cano2live_jnt_mats_woRoot)
         live_pts = torch.einsum('nxy,ny->nx', pt_mats[..., :3, :3], cano_pts) + pt_mats[..., :3, 3]
-        # cloud=trimesh.PointCloud(live_pts.detach().cpu().numpy())
+        vert_mats = torch.einsum('nj,jxy->nxy', verts_lbs, cano2live_jnt_mats_woRoot)
+        live_verts = torch.einsum('nxy,ny->nx', vert_mats[..., :3, :3], torch.from_numpy(cano_smpl_v).cuda()) + vert_mats[..., :3, 3]
+        # cloud=trimesh.Trimesh(live_verts.detach().cpu().numpy(), template.faces)
         # ply_filename = os.path.join(data_dir, f'{args.output_path}', '%08d' % pose_idx + '.ply')
         # cloud.export(ply_filename)
         live_pos_map = torch.zeros((map_size, 2 * map_size, 3)).to(live_pts)

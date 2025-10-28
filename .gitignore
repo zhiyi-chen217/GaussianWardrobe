@@ -171,3 +171,17 @@ cython_debug/
 *.exe
 /data/
 AG/
+*.mp4
+*video*.py
+*.jpg
+wandb/
+video/
+network/lpips/
+*.png
+.vscode
+pytorch3d/
+smplxd
+layga.py
+generate_pos_script.py
+pytorch_ssim/
+PoissonRecon/

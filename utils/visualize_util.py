@@ -198,7 +198,8 @@ def paper_visualize_gaussian_map(gaussian_map):
     u, s, v = np.linalg.svd(valid_gaussians.transpose())
     print(u, s, v)
 
-def post_process_gs_render(rgb_map):
+def post_process_img(rgb_map, img_factor=1):
     rgb_map = rgb_map.clip_(0., 1.)
-    rgb_map = (rgb_map.cpu().numpy() * 255).astype(np.uint8)
+    rgb_map = cv.resize(rgb_map.cpu().numpy(), (0, 0), fx = img_factor, fy = img_factor)
+    rgb_map = (rgb_map * 255).astype(np.uint8)
     return rgb_map

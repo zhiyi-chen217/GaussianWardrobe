@@ -2,15 +2,15 @@ mode: train
 train:
   dataset: MvRgbDataset4DDress
   data:
-    subject_name: 185
-    data_dir: /home/zhiychen/Desktop/train_data/multiviewRGC/4d_dress/00185/Inner
+    subject_name: 170
+    data_dir: /data/zhiychen/ActorHQ/Actor01/Sequence1/4x
     frame_range:
     - 0
     - 1
     - 1
     used_cam_ids: [0, 1, 2, 3]
     mode: nerf
-  net_ckpt_dir: ./results/4d_dress/00185/Inner/template
+  net_ckpt_dir: ./results/4d_dress/00148/Inner/template
   prev_ckpt: null
   save_init_ckpt: false
   start_epoch: 0

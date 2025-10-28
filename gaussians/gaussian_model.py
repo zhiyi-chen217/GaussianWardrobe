@@ -114,7 +114,7 @@ class GaussianModel:
 
     @property
     def get_scaling(self):
-        return self.scaling_activation(self._scaling)
+        return self.scaling_activation(self._scaling) + 1e-4
 
     @property
     def get_scaling_raw(self):

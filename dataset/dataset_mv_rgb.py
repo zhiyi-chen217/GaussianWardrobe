@@ -15,7 +15,8 @@ import utils.visualize_util as visualize_util
 import dataset.commons as commons
 from utils.sh_utils import RGB2GRAY
 from PIL import Image
-
+from utils.smpl_util import smplx_model
+from utils.net_util import process_pos_map
 class MvRgbDatasetBase(Dataset):
     @torch.no_grad()
     def __init__(
@@ -55,8 +56,7 @@ class MvRgbDatasetBase(Dataset):
             self.smpl_pos_map = {}
             for layer in layers:
                 self.smpl_pos_map[layer] = config.opt.get("smpl_pos_map", "smpl_pos_map") + f"_{layer}"
-        self.smpl_model = smplx.SMPLX(model_path = config.PROJ_DIR + '/smpl_files/smplx', gender = 'neutral', use_pca = True, num_pca_comps = 12, flat_hand_mean = True, batch_size = 1)
-        self.smpl_model_fit = smplx.SMPLX(model_path = config.PROJ_DIR + '/smpl_files/smplx', gender = 'neutral', use_pca = True, num_pca_comps = 12, flat_hand_mean = False, batch_size = 1)
+        self.smpl_model, self.smpl_model_fit = smplx_model(self.data_dir)
 
         pose_list = list(range(self.smpl_data['body_pose'].shape[0]))
         if frame_range is not None:
@@ -164,21 +164,20 @@ class MvRgbDatasetBase(Dataset):
         data_item = dict()
         if self.load_smpl_pos_map:
             if self.layers is None:
-                smpl_pos_map = cv.imread(self.data_dir + '/{}/%08d.exr'.format(self.smpl_pos_map) % pose_idx, cv.IMREAD_UNCHANGED)
-                pos_map_size = smpl_pos_map.shape[1] // 2
-                smpl_pos_map = np.concatenate([smpl_pos_map[:, :pos_map_size], smpl_pos_map[:, pos_map_size:]], 2)
-                smpl_pos_map = smpl_pos_map.transpose((2, 0, 1))
+                smpl_pos_map = process_pos_map(self.data_dir + '/{}/%08d.exr'.format(self.smpl_pos_map) % pose_idx)
                 data_item['smpl_pos_map'] = smpl_pos_map
             else:
                 smpl_pos_maps = {}
+                smpl_cano_pos_maps = {}
                 for layer in self.layers:
-                    smpl_pos_map = cv.imread(self.data_dir + '/{}/%08d.exr'.format(self.smpl_pos_map[layer]) % pose_idx,
-                                             cv.IMREAD_UNCHANGED)
-                    pos_map_size = smpl_pos_map.shape[1] // 2
-                    smpl_pos_map = np.concatenate([smpl_pos_map[:, :pos_map_size], smpl_pos_map[:, pos_map_size:]], 2)
-                    smpl_pos_map = smpl_pos_map.transpose((2, 0, 1))
+                    smpl_pos_map = process_pos_map(self.data_dir + '/{}/%08d.exr'.format(self.smpl_pos_map[layer]) % pose_idx)
                     smpl_pos_maps[layer] = smpl_pos_map
+
+                    smpl_cano_pos_map = process_pos_map(self.data_dir + '/{}/cano_smpl_pos_map.exr'.format(self.smpl_pos_map[layer]))
+                    smpl_cano_pos_maps[layer] = smpl_cano_pos_map
+                data_item['smpl_cano_pos_map'] = smpl_cano_pos_maps
                 data_item['smpl_pos_map'] = smpl_pos_maps
+                
 
 
         if self.load_smpl_nml_map:
@@ -228,14 +227,21 @@ class MvRgbDatasetBase(Dataset):
                     'boundary_mask_img': boundary_mask_img
                 })
                 if self.use_label:
-                    label_img = (self.load_label_image(pose_idx, view_idx) / 255.).astype(np.float32)
+                    label_img = (self.load_image(pose_idx, view_idx, "labels_color") / 255.).astype(np.float32)
                     data_item["label_img"] = label_img
                 if self.use_body_label:
-                    label_body_img = (self.load_label_body_image(pose_idx, view_idx) / 255.).astype(np.float32)
+                    label_body_img = (self.load_image(pose_idx, view_idx, "body_masks") / 255.).astype(np.float32)
                     data_item["label_body_img"] = label_body_img
                 if self.use_normal:
-                    label_body_img = (self.load_label_body_image(pose_idx, view_idx) / 255.).astype(np.float32)
-                    data_item["label_body_img"] = label_body_img
+                    normal_img = (self.load_image(pose_idx, view_idx, "normals") / 255.).astype(np.float32)
+                    data_item["normal_img"] = normal_img
+                joints_3d = live_smpl["joints"][:, [config.JOINT_MAPPER["head"]]]
+                extrinsic = self.extr_mats[view_idx]
+                intrinsic = self.intr_mats[view_idx]
+                projection_matrices = torch.tensor(intrinsic @ extrinsic[:3])
+                p = torch.einsum("ij,mnj->mni", projection_matrices[:3, :3], joints_3d) + projection_matrices[:3, 3]
+                p = p[..., :2] / p[..., 2:3]
+                data_item["head_pixel"] = p[0].squeeze(0)
             elif self.mode == 'nerf':
                 depth_img = np.zeros(color_img.shape[:2], np.float32)
                 nerf_random = nerf_util.sample_randomly_for_nerf_rendering(
@@ -290,8 +296,12 @@ class MvRgbDatasetBase(Dataset):
         Initialize:
         self.smpl_data, a dict including ['body_pose', 'global_orient', 'transl', 'betas', ...]
         """
-        smpl_data = np.load(self.data_dir + '/smpl_params.npz', allow_pickle = True)
-        smpl_data = dict(smpl_data)
+        smpl_data = np.load(self.data_dir + f'/{config.opt.get("sequence_name", "smpl_params")}.npz', allow_pickle = True)
+        smpl_data_raw = dict(smpl_data)
+        smpl_data = {}
+        for key in smpl_data_raw:
+            if smpl_data_raw[key].dtype == "float64" or smpl_data_raw[key].dtype == "float32":
+                smpl_data[key] = smpl_data_raw[key]
         self.smpl_data = {k: torch.from_numpy(v.astype(np.float32)) for k, v in smpl_data.items()}
 
     def filter_missing_files(self):
@@ -300,18 +310,13 @@ class MvRgbDatasetBase(Dataset):
     def load_color_mask_images(self, pose_idx, view_idx):
         raise NotImplementedError
     
-    def load_label_image(self, pose_idx, view_idx):
+    def load_image(self, pose_idx, view_idx, folder_name):
         raise NotImplementedError
     
-    def load_label_body_image(self, pose_idx, view_idx):
-        raise NotImplementedError
-
-    def load_label_body_cover_image(self, pose_idx, view_idx):
-        raise NotImplementedError
 
     
     @staticmethod
-    def get_boundary_mask(mask, kernel_size = 5):
+    def get_boundary_mask(mask, kernel_size = 3):
         """
         :param mask: np.uint8
         :param kernel_size:
@@ -435,18 +440,27 @@ class MvRgbDataset4DDress(MvRgbDatasetBase):
             = cam_names, img_widths, img_heights, extr_mats, intr_mats
         self.view_num = len(self.cam_names)
 
-    def load_label_image(self, pose_idx, view_idx):
+    def load_image(self, pose_idx, view_idx, folder_name):
         cam_name = self.cam_names[view_idx]
-        label_img = cv.imread(os.path.join(self.data_dir, cam_name,
-                                           "labels", '%05d.png' % pose_idx), cv.IMREAD_UNCHANGED)
-        return label_img
+        img = cv.imread(os.path.join(self.data_dir, cam_name,
+                                           folder_name, '%05d.png' % pose_idx), cv.IMREAD_UNCHANGED)
+        return img
     
-    def load_label_body_image(self, pose_idx, view_idx):
-        cam_name = self.cam_names[view_idx]
-        label_img = cv.imread(os.path.join(self.data_dir, cam_name,
-                                           "body_masks", '%05d.png' % pose_idx), cv.IMREAD_UNCHANGED)
-        return label_img
+    def filter_missing_files(self):
+        missing_data_list = []
+        if os.path.exists((self.data_dir + '/missing_img_files.txt')):
+            with open(self.data_dir + '/missing_img_files.txt', 'r') as fp:
+                lines = fp.readlines()
+            for line in lines:
+                line = line.replace('\\', '/')  # considering both Windows and Ubuntu file system
+                frame_idx = int(os.path.basename(line).replace('.jpg', ''))
+                for camera in self.used_cam_ids:
+                    missing_data_list.append((frame_idx, camera))
+            for missing_data_idx in missing_data_list:
+                if missing_data_idx in self.data_list:
+                    self.data_list.remove(missing_data_idx)
 
+    
     def load_color_mask_images(self, pose_idx, view_idx):
         cam_name = self.cam_names[view_idx]
         color_img = cv.imread(os.path.join(self.data_dir, cam_name,
@@ -545,3 +559,96 @@ class MvRgbDatasetOther(MvRgbDatasetBase):
         #         selected_gray.append(self.masklabel[layer])
         #     mask_img = np.isin(label_img, selected_gray).astype(np.uint8) * 255
         return color_img, mask_img
+    
+class MvRgbDatasetActorsHQ(MvRgbDatasetBase):
+    def __init__(
+        self,
+        data_dir,
+        frame_range = None,
+        used_cam_ids = None,
+        training = True,
+        subject_name = None,
+        load_smpl_pos_map = False,
+        load_smpl_nml_map = False,
+        mode = '3dgs',
+        layers = None,
+        use_label = False,
+        use_body_label = False,
+        use_normal = False,
+    ):
+        super(MvRgbDatasetActorsHQ, self).__init__(
+            data_dir,
+            frame_range,
+            used_cam_ids,
+            training,
+            subject_name,
+            load_smpl_pos_map,
+            load_smpl_nml_map,
+            mode,
+            layers,
+            use_label,
+            use_body_label,
+            use_normal,
+        )
+
+        if subject_name is None:
+            self.subject_name = os.path.basename(os.path.dirname(self.data_dir))
+
+    def load_cam_data(self):
+        import csv
+        cam_names = ["Cam000"]
+        extr_mats = [np.identity(4, np.float32)]
+        intr_mats = [np.identity(3, np.float32)]
+        img_widths = [0]
+        img_heights = [0]
+        with open(self.data_dir + '/calibration.csv', "r", newline = "", encoding = 'utf-8') as fp:
+            reader = csv.DictReader(fp)
+            for row in reader:
+                cam_names.append(row['name'])
+                img_widths.append(int(row['w']))
+                img_heights.append(int(row['h']))
+
+                extr_mat = np.identity(4, np.float32)
+                extr_mat[:3, :3] = cv.Rodrigues(np.array([float(row['rx']), float(row['ry']), float(row['rz'])], np.float32))[0]
+                extr_mat[:3, 3] = np.array([float(row['tx']), float(row['ty']), float(row['tz'])])
+                extr_mat = np.linalg.inv(extr_mat)
+                extr_mats.append(extr_mat)
+
+                intr_mat = np.identity(3, np.float32)
+                intr_mat[0, 0] = float(row['fx']) * float(row['w'])
+                intr_mat[0, 2] = float(row['px']) * float(row['w'])
+                intr_mat[1, 1] = float(row['fy']) * float(row['h'])
+                intr_mat[1, 2] = float(row['py']) * float(row['h'])
+                intr_mats.append(intr_mat)
+
+        self.cam_names, self.img_widths, self.img_heights, self.extr_mats, self.intr_mats \
+            = cam_names, img_widths, img_heights, extr_mats, intr_mats
+
+    def load_color_mask_images(self, pose_idx, view_idx):
+        cam_name = f"Cam{view_idx:03d}"
+        color_img = cv.imread(self.data_dir + '/rgbs/%s/%s_rgb%06d.jpg' % (cam_name, cam_name, pose_idx), cv.IMREAD_UNCHANGED)
+        mask_img = cv.imread(self.data_dir + '/masks/%s/%s_mask%06d.png' % (cam_name, cam_name, pose_idx), cv.IMREAD_UNCHANGED)
+        return color_img, mask_img
+    
+    def filter_missing_files(self):
+        missing_data_list = []
+        with open(self.data_dir + '/missing_img_files.txt', 'r') as fp:
+            lines = fp.readlines()
+        for line in lines:
+            line = line.replace('\\', '/')  # considering both Windows and Ubuntu file system
+            frame_idx = int(os.path.basename(line).replace('.jpg', ''))
+            for camera in self.used_cam_ids:
+                missing_data_list.append((frame_idx, camera))
+        for missing_data_idx in missing_data_list:
+            if missing_data_idx in self.data_list:
+                self.data_list.remove(missing_data_idx)
+
+    def load_image(self, pose_idx, view_idx, folder_name):
+        cam_name = f"Cam{view_idx:03d}"
+        if folder_name == "labels_color":
+            img = cv.imread(os.path.join(self.data_dir, '%s/%s/label-f%06d.png' % (folder_name, cam_name, pose_idx)), cv.IMREAD_UNCHANGED)
+        elif folder_name == "normals":
+            img = cv.imread(os.path.join(self.data_dir, '%s/%s/%s_rgb%06d.png' % (folder_name, cam_name, cam_name, pose_idx)), cv.IMREAD_UNCHANGED)
+        else:
+            img = cv.imread(os.path.join(self.data_dir, '%s/%s/%05d.png' % (folder_name, cam_name, pose_idx)), cv.IMREAD_UNCHANGED)
+        return img

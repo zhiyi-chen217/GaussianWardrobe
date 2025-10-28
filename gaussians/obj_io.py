@@ -38,13 +38,15 @@ def save_gaussians_as_ply(path, gaussian_vals: dict):
     f_dc = features_dc.transpose(1, 2).flatten(start_dim = 1).contiguous().cpu().numpy()
     f_rest = features_rest.transpose(1, 2).flatten(start_dim = 1).contiguous().cpu().numpy()
     opacities = inverse_sigmoid(gaussian_vals['opacity'].detach()).cpu().numpy()
+    gaussian_mask = (opacities > 1e-3)[:, 0]
     scale = torch.log(gaussian_vals['scales'].detach()).cpu().numpy()
     rotation = gaussian_vals['rotations'].detach().cpu().numpy()
 
     dtype_full = [(attribute, 'f4') for attribute in construct_list_of_attributes(features_dc, features_rest, scale, rotation)]
 
-    elements = np.empty(xyz.shape[0], dtype = dtype_full)
-    attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis = 1)
+    elements = np.empty(gaussian_mask.sum(), dtype = dtype_full)
+    attributes = np.concatenate((xyz[gaussian_mask, :], normals[gaussian_mask, :], f_dc[gaussian_mask, :], 
+                                 f_rest[gaussian_mask, :], opacities[gaussian_mask, :], scale[gaussian_mask, :], rotation[gaussian_mask, :]), axis = 1)
     elements[:] = list(map(tuple, attributes))
     el = PlyElement.describe(elements, 'vertex')
     PlyData([el]).write(path)

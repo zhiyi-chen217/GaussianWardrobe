@@ -76,9 +76,12 @@ def solve(num_joints, point_interpolant_exe):
 
 @torch.no_grad()
 def calc_cano_weight_volume(data_dir, gender = 'neutral'):
-    smpl_params = np.load(data_dir + '/smpl_params.npz')
+    smpl_params = np.load(data_dir + '/smpl_params.npz', allow_pickle=True)
     smpl_shape = torch.from_numpy(smpl_params['betas'][0]).to(torch.float32)
-    smpl_model = smplx.SMPLX(model_path = config.PROJ_DIR + '/smpl_files/smplx', gender = gender, use_pca = False, num_pca_comps = 45, flat_hand_mean = True, batch_size = 1)
+    # smpl_shape = torch.zeros((10,)).to(torch.float32)
+    smpl_model = smplx.SMPLX(model_path = config.PROJ_DIR + '/smpl_files/smplx', gender = gender, use_pca = True, num_pca_comps = 12, flat_hand_mean = True, batch_size = 1)
+    # smpl_model = smplx.SMPLX(model_path = config.PROJ_DIR + '/smpl_files/smplx', gender = gender, use_pca = False, num_pca_comps = 45, flat_hand_mean = True, batch_size = 1)
+
 
     def get_grid_points(bounds, res):
         # voxel_size = (bounds[1] - bounds[0]) / (np.array(res, np.float32) - 1)
@@ -112,7 +115,7 @@ def calc_cano_weight_volume(data_dir, gender = 'neutral'):
     )
 
     compute_lbs_grad(cano_smpl_trimesh, smpl_model.lbs_weights.cpu().numpy())
-    solve(smpl_model.lbs_weights.shape[-1], "./bins/PointInterpolant")
+    solve(smpl_model.lbs_weights.shape[-1], "/local/home/zhiychen/AnimatableGaussain/PoissonRecon/Bin/Linux/PointInterpolant")
 
     ### NOTE concatenate all grids
     fn_list = sorted(list(glob.glob(os.path.join(tmp_dir, 'grid_*.grd'))))

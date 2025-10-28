@@ -14,27 +14,64 @@ from pytorch3d.structures import Meshes
 sys.path.append("/local/home/zhiychen/AnimatableGaussain")
 from utils.sh_utils import RGB2GRAY
 from tqdm import tqdm
+import re
 
-SUBJECT = 185
-CAMERA = 4
-TAKES = [11, 12, 13, 14, 15, 17]
-LAYER = "Outer"
 SURFACE_LABEL = ['skin', 'upper', 'lower', 'hair', 'shoe', 'outer']
-SURFACE_LABEL_COLOR = np.array([[128, 128, 128], [255, 128, 0], [128, 0, 255], [180, 50, 50], [50, 180, 50], [0, 128, 255]])
+SURFACE_LABEL_COLOR = np.array([[127, 127, 127], [255, 128, 0], [128, 0, 255], [180, 50, 50], [50, 180, 50], [0, 128, 255]])
 SURFACE_LABEL_GRAY = RGB2GRAY(SURFACE_LABEL_COLOR)
 MASK_LABEL = dict(zip(SURFACE_LABEL, SURFACE_LABEL_GRAY))
-camera_list = [4, 16, 28, 36, 41, 48, 52, 60, 69, 76, 84, 92]
-def read_all_png_camera(data_dir, png_type="images", png_prefix="", takes=TAKES, camera=CAMERA):
-    png_list = []
-    for take in takes:
+RGB_LABEL = dict(zip(SURFACE_LABEL, SURFACE_LABEL_COLOR))
+camera_list = [4, 16, 28, 36, 41, 48, 52, 60, 69, 76, 84, 92, 89, 21]
+# data_dir = "/mnt/work/Clothes4D/SMLCHumans/"
+data_dir = "/mnt/work/Clothes4D/SMLCHumans/"
+generated_data_dir = "/data/zhiychen/4ddress/"
+
+def get_mesh_indices(mesh_folder):
+    """Extract indices from mesh filenames like mesh-f00011_smplx.pkl"""
+    pattern = re.compile(r"mesh-f(\d{5})_smplx\.pkl")
+    indices = set()
+
+    for file_name in os.listdir(mesh_folder):
+        match = pattern.match(file_name)
+        if match:
+            index = int(match.group(1))
+            indices.add(index)
+
+    return indices
+
+def get_matching_files_by_index(folder, valid_indices, prefix, extension=".png"):
+    """
+    Get files like <prefix>-f00011<extension> if index is in valid_indices.
+    Example: capture-f00011.png
+    """
+    pattern = re.compile(rf"{re.escape(prefix)}-f(\d{{5}}){re.escape(extension)}")
+    matching_files = []
+
+    for file_name in os.listdir(folder):
+        match = pattern.match(file_name)
+        if match:
+            index = int(match.group(1))
+            if index in valid_indices:
+                matching_files.append(os.path.join(folder, file_name))
+
+    return sorted(matching_files)
+
+def read_all_png_camera(data_dir, png_type="images", png_prefix=""):
+    png_list = [] 
+       
+    for take in TAKES:
         if png_type != "labels":
-            png_list += glob.glob(
-                os.path.join(data_dir, '%05d' % SUBJECT, LAYER, f'Take{take}', "Capture", png_type, '%04d' % camera, f'{png_prefix}*.png'),
-                recursive=True)
+            valid_indices = get_mesh_indices(os.path.join(data_dir, '%05d' % SUBJECT, LAYER, f'Take{take}', "SMPLX"))
+            png_list += get_matching_files_by_index(
+                os.path.join(data_dir, '%05d' % SUBJECT, LAYER, f'Take{take}', "Capture", png_type, '%04d' % CAMERA), 
+                valid_indices, png_prefix)
         else:
             png_list += glob.glob(
-                os.path.join(data_dir, '%05d' % SUBJECT, LAYER, f'Take{take}', "Capture", '%04d' % camera, png_type, f'{png_prefix}*.png'),
+                os.path.join(data_dir, '%05d' % SUBJECT, LAYER,  f'Take{take}', "Capture", '%04d' % CAMERA, png_type, "*.png"),
                 recursive=True)
+    # png_list += glob.glob(
+    #     os.path.join(data_dir, '%05d' % SUBJECT, LAYER,  '%04d' % CAMERA, png_type, "*.png"),
+    #     recursive=True)
     png_list.sort()
     return png_list
 
@@ -61,11 +98,29 @@ def copy_filter_label(new_data_dir, png_list, png_type="labels"):
     for ind in range(len(png_list)):
         new_path = os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, '%04d' % CAMERA, png_type, f'{ind:05d}.png')
         img = cv.imread(png_list[ind], cv.IMREAD_GRAYSCALE)
-        new_img = np.full((img.shape[0], img.shape[1], 3), 128)
-        new_img[img != 255] = 0
-        new_img[img == MASK_LABEL["outer"]] = 255
+        new_img = cv.imread(png_list[ind], cv.IMREAD_UNCHANGED)
+        if LAYER == "Outer":
+            new_img[img == MASK_LABEL["hair"], :] = 0
+            new_img[img == MASK_LABEL["shoe"], :] = 0
+            new_img[img == 128, :] = 0
+            new_img[img == 126, :] = 0
+        else:
+            new_img[img == MASK_LABEL["hair"], :] = MASK_LABEL["skin"]
+            new_img[img == MASK_LABEL["shoe"], :] = MASK_LABEL["skin"]
+
+        # new_img[img == MASK_LABEL["outer"]] = 255
         # new_img[img == MASK_LABEL["upper"]] = 255
-        
+        # new_img[img == MASK_LABEL["lower"]] = 255
+        # new_img = np.full((img.shape[0], img.shape[1], 3), 128)
+        # new_img[img != 255] = 0
+        # new_img[img == MASK_LABEL["upper"]] = 255
+        # new_img[img == MASK_LABEL["lower"]] = 255
+        # new_img[img == MASK_LABEL["outer"]] = 255
+
+        # new_img = np.full((img.shape[0], img.shape[1]), 255)
+        # new_img[img != 255] = 0 * 255
+        # new_img[img == MASK_LABEL["upper"]] = 1/3 * 255
+        # new_img[img == MASK_LABEL["lower"]] = 2/3 * 255
         cv.imwrite(new_path, new_img) 
 
 
@@ -75,7 +130,7 @@ def copy_to_folder(new_data_dir, copy_list, folder_list, file_type):
         new_path = os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, *folder_list, f'{ind:05d}.{file_type}')
         shutil.copy(copy_list[ind], new_path)
 
-def combine_pose_to_npz(new_data_dir):
+def combine_pose_to_npz(new_data_dir, sequence_name="smpl_params"):
     regstr_list = []
     regstr_list += glob.glob(
         os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, "pose", '*.pkl'),
@@ -101,7 +156,7 @@ def combine_pose_to_npz(new_data_dir):
                 if k == "betas":
                     continue
                 smpl_data[k] = np.concatenate((smpl_data[k], np.expand_dims(regstr[k], 0)), axis=0)
-    np.savez(os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, 'smpl_params.npz'), **smpl_data)
+    np.savez(os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, f'{sequence_name}_gender.npz'), **smpl_data)
 # load pytorch3d cameras from parameters: intrinsics, extrinsics
 def load_pytorch_cameras(camera_params, camera_list, image_shape):
     # init camera_dict
@@ -175,22 +230,40 @@ def render_covered_body_mask(new_data_dir):
         cv.imwrite(new_path, new_img) 
         
 if __name__ == '__main__':
-    data_dir = "/mnt/work/Clothes4D/SMLCHumans/"
-    new_data_dir = "/data/zhiychen/AnimatableGaussain/train_data/multiviewRGC/4d_dress/"
-    generated_data_dir = "/data/zhiychen/4ddress/"
-    # image_list = read_all_png_camera(data_dir, png_prefix="capture")
-    # mask_list = read_all_png_camera(data_dir, png_type="masks", png_prefix="mask")
-    # copy_to_folder(new_data_dir, image_list, ['%04d' % CAMERA, "images"], "png")
-    # copy_to_folder(new_data_dir, mask_list,  ['%04d' % CAMERA, "masks"], "png")
-    # pose_list = read_all_pose(data_dir)
-    # copy_to_folder(new_data_dir, pose_list, ["pose"], "pkl")
-    # combine_pose_to_npz(new_data_dir)
-    # all_camera_path = "/data/zhiychen/AnimatableGaussain/train_data/multiviewRGC/4d_dress/rgb_cameras.json"
-    # generate_camera_pkl(all_camera_path, camera_list, new_data_dir)
-    label_list = read_all_png_camera(generated_data_dir, png_type="labels", png_prefix="label")
-    copy_filter_label(new_data_dir, label_list, png_type="labels")
+    from argparse import ArgumentParser
+    arg_parser = ArgumentParser()
+    arg_parser.add_argument('-c', '--camera', type=int, default="28", help = 'camera_name')
+    arg_parser.add_argument('-s', '--subject', type=str, default="00187", help='Configuration output path.')
+    arg_parser.add_argument('-l', '--layer', type=str, default="Inner", help='layer')
+    arg_parser.add_argument('-m', '--mode', type=str, default="test", help='Train or test moce')
+    arg_parser.add_argument('-j', '--job', default="image", type=str)
 
-    # mesh_path = os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, "body_mesh")
-    # render_mesh(mesh_path, new_data_dir)
-    # render_covered_body_mask(new_data_dir)
+    args = arg_parser.parse_args()
+    global SUBJECT 
+    SUBJECT = int(args.subject)
+    global CAMERA 
+    CAMERA = int(args.camera)
+    TAKES =   [8, 9] 
+    global LAYER
+    LAYER = args.layer
+    global new_data_dir
+    new_data_dir = f"/data/zhiychen/AnimatableGaussain/{args.mode}_data/multiviewRGC/4d_dress/"
+    if args.job == "image":
+        image_list = read_all_png_camera(data_dir, png_prefix="capture")
+        mask_list = read_all_png_camera(data_dir, png_type="masks", png_prefix="mask")
+        copy_to_folder(new_data_dir, image_list, ['%04d' % CAMERA, "images"], "png")
+        copy_to_folder(new_data_dir, mask_list,  ['%04d' % CAMERA, "masks"], "png")
+        # label_list = read_all_png_camera(generated_data_dir, png_type="labels", png_prefix="label")
+        # copy_filter_label(new_data_dir, label_list, png_type="labels")
+        # mesh_path = os.path.join(new_data_dir, '%05d' % SUBJECT, LAYER, "body_mesh")
+        # render_mesh(mesh_path, new_data_dir)
+    elif args.job == "pose":
+        pose_list = read_all_pose(data_dir)
+        copy_to_folder(new_data_dir, pose_list, ["pose"], "pkl")
+        combine_pose_to_npz(new_data_dir)
+    all_camera_path = "/data/zhiychen/AnimatableGaussain/train_data/multiviewRGC/4d_dress/rgb_cameras.json"
+    generate_camera_pkl(all_camera_path, camera_list, new_data_dir)
+
+
+
     

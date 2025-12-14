@@ -5,32 +5,34 @@ import torch.nn as nn
 import torch.nn.functional as F
 from pytorch3d import ops
 from network.network import ImplicitNetwork as ImplicitNet
-
-
+import trimesh
+import os
+import config
 class DeformationGraph(nn.Module):
-    def __init__(self, opt=None, K=5):
+    def __init__(self, opt=None):
         super().__init__()
         self.deformation_graph = ImplicitNet(**opt)
-        self.K = K
+        mode = config.opt["mode"]
+        self.simplified_mesh = trimesh.load_mesh(os.path.join(config.opt[mode]["data"]["data_dir"], 
+                                                            config.opt.get("smpl_pos_map", "smpl_pos_map") + "_cloth", "simplified_lower.ply"))
+        self.update_deformation_nodes(self.simplified_mesh)
 
-    def update_deformation_nodes(self, deformation_graph_verts, cano_mesh):
+    def update_deformation_nodes(self, simplified_mesh):
         """
         Here the deformation nodes should be progressively updated based on the new cloth template
         """
-        if not torch.is_tensor(deformation_graph_verts):
-            self.deformation_graph_verts = torch.from_numpy(deformation_graph_verts).float().cuda().detach()
-        else:
-            assert False, "deformation_graph_verts should be a numpy array"
-            self.deformation_graph_verts = deformation_graph_verts.detach()
-        self.cano_mesh = cano_mesh
+        self.deformation_graph_verts = torch.from_numpy(simplified_mesh.vertices).float().cuda().detach().unsqueeze(0)
+        self.cano_mesh = simplified_mesh
 
-    def get_transformation(self, nodes, cond):
-        n_batch = cond["smpl"].shape[0]
+    def forward(self, cond, nodes=None):
+        if nodes == None:
+            nodes = self.deformation_graph_verts
+        n_batch = cond.shape[0]
         _, n_joint, n_dim = nodes.shape
         y = torch.zeros((n_batch, n_joint, n_dim))
         nodes_input, _ = torch.broadcast_tensors(nodes, y)
         transformation = self.deformation_graph(nodes_input, cond)  # predict the 6 DoF
-        rot = transformation[:, :, :3]  # TODO try to use the quaternion representation
+        rot = transformation[:, :, :3] * np.pi # TODO try to use the quaternion representation
         trans = transformation[:, :, 3:]
 
         rot_mat = batch_rodrigues(rot.reshape(n_batch*n_joint, 3)) # from axis-angle to rotation matrix
@@ -39,116 +41,6 @@ class DeformationGraph(nn.Module):
         transform_mat = to_transform_mat(rot_mat, trans.reshape(n_batch*n_joint, 3, 1))
         transform_mat = transform_mat.reshape(n_batch, n_joint, 4, 4)
         return transform_mat
-
-    def forward(self, x=None, cond=None, nodes=None, nodes_deformed=None, lbs=True,
-                smpl_tfs=None, inverse=False, return_transform_mat=False,
-                smpl_root_orient=None, smpl_trans=None, scale=None,
-                time_enc=None):
-        """
-        Obtain the warped points
-        """
-        n_batch, n_point, n_dim = x.shape
-        if nodes is None:
-            transform_mat = self.get_transformation(self.deformation_graph_verts[None], cond)
-        else:
-            transform_mat = self.get_transformation(nodes, cond)
-        if lbs:
-            # Version 1
-            # TODO double-check the correctness of the following code
-            # Confirmed: the following code is incorrect
-            # global_orient = smpl_tfs[:, :1].detach().clone()
-            # transform_mat = global_orient @ transform_mat
-
-            # Version 2
-            smpl_root_orient_mat = batch_rodrigues(smpl_root_orient)
-            smpl_root_orient_mat = to_transform_mat(smpl_root_orient_mat, torch.zeros(
-                [smpl_root_orient_mat.shape[0], 3, 1]).cuda()).unsqueeze(1).detach()
-            # TODO double-check the correctness of the following code
-            transform_mat = torch.matmul(smpl_root_orient_mat.expand(-1, transform_mat.shape[1], -1, -1), transform_mat)
-            transform_mat[:, :, :3, :] = transform_mat[:, :, :3, :] * scale.unsqueeze(1).unsqueeze(1)
-            transform_mat[:, :, :3, 3] = transform_mat[:, :, :3, 3] + smpl_trans.unsqueeze(1) * scale.unsqueeze(1)
-            if return_transform_mat:
-                return transform_mat
-            if inverse:
-
-                # assert nodes_deformed is not None
-                if nodes_deformed is None:
-                    skinning_weights_self = torch.eye(self.deformation_graph_verts.shape[0]).cuda()
-                    nodes_deformed = skinning(self.deformation_graph_verts[None], skinning_weights_self[None],
-                                              transform_mat, inverse=False, return_T=False).detach()
-                distance_squared, nn_index, _ = ops.knn_points(x, nodes_deformed, K=self.K,
-                                                               return_nn=False)
-            else:
-                distance_squared, nn_index, _ = ops.knn_points(x.reshape(1, n_batch*n_point, 3),
-                                                               self.deformation_graph_verts.unsqueeze(0), K=self.K,
-                                                               return_nn=False)
-
-            distance = torch.sqrt(distance_squared)
-            distance = distance.reshape(1, n_batch*n_point, self.K)
-            nn_index = nn_index.reshape(1, n_batch * n_point, self.K)
-            least_distance = distance[0, :,
-                             0]  # distance is naturally sorted, we choose the zero index as the least distance
-
-            distance = torch.clamp(distance, max=1)
-            weights = -torch.log(distance - 1e-6)[0]
-            weights = weights / weights.sum(dim=-1, keepdim=True)
-
-            skinning_weights = torch.zeros(
-                (n_batch*n_point, self.deformation_graph_verts.shape[0])).cuda()  # TODO sparse matrix is better
-            skinning_weights.scatter_(1, nn_index[0], weights)  # TODO double-check scatter_
-            skinning_weights = skinning_weights.reshape(n_batch, n_point, self.deformation_graph_verts.shape[0])
-            xc, _ = skinning(x, skinning_weights, transform_mat, inverse=inverse, return_T=True)
-            mask = least_distance < 0.2
-            mask = mask.reshape(n_batch, n_point, 1)
-
-            mask_true = torch.full((n_batch, n_point, 1), True, device=x.device)
-            return xc, mask_true, nodes_deformed
-
-    def forward_graph(self, nodes=None, cond=None, smpl_tfs=None, smpl_root_orient=None, smpl_trans=None, scale=None):
-        if nodes is None:
-            nodes = self.deformation_graph_verts
-        transform_mat = self.get_transformation(nodes, cond)
-
-        # Version 1
-        # smpl_root_orient = smpl_tfs[:, 0:1]
-        # transform_mat = smpl_root_orient @ transform_mat
-
-        # Version 2
-        smpl_root_orient_mat = batch_rodrigues(smpl_root_orient)
-        smpl_root_orient_mat = to_transform_mat(smpl_root_orient_mat,
-                                                torch.zeros([smpl_root_orient_mat.shape[0], 3, 1]).cuda()).unsqueeze(
-            0).detach()
-
-        transform_mat = torch.matmul(smpl_root_orient_mat.expand(-1, transform_mat.shape[1], -1, -1), transform_mat)
-        transform_mat[:, :, :3, :] = transform_mat[:, :, :3, :] * scale.unsqueeze(1).unsqueeze(1)
-        transform_mat[:, :, :3, 3] = transform_mat[:, :, :3, 3] + smpl_trans.unsqueeze(1) * scale.unsqueeze(1)
-        nodes = nodes.squeeze(0)
-        skinning_weights_self = torch.eye(nodes.shape[0]).cuda()
-        nodes_deformed = skinning(nodes[None], skinning_weights_self[None], transform_mat, inverse=False,
-                                  return_T=False)
-        return nodes_deformed
-
-    def warping(self, xc, influence_nodes_v_all, rot_mat_all, trans_all, weights):
-        """
-        warping canonical points based on the deformation nodes that influence them. Here we choose the nearest 5 nodes.
-        """
-        # deformation graph warping
-        warped_xc_all = (torch.einsum('bij, bkj->bki', rot_mat_all,
-                                      (xc.repeat_interleave(self.K, dim=0) - influence_nodes_v_all).unsqueeze(
-                                          1)).squeeze(1) \
-                         + influence_nodes_v_all + trans_all).reshape((xc.shape[0], self.K, -1)) * weights.unsqueeze(-1)
-        # weighted average
-        warped_xc = warped_xc_all.sum(dim=1)
-        # TODO as rigid as possible loss
-        return warped_xc
-
-    def inverse_warping(self, xc, influence_nodes_v_all, rot_mat_all, trans_all, weights):
-        """
-        inverse warping canonical points based on the deformation nodes that influence them. Here we choose the nearest 5 nodes.
-        """
-
-        # inverse deformation graph warping
-        warped_xc_all = ()
 
 
 def batch_rodrigues(axisang):

@@ -214,6 +214,24 @@ class AvatarTrainer:
         batch_losses.update({
             'rotation': rotation_loss.item()
         })
+        if config.opt["model"]["virtual_bone"]:
+            # lbs weight initialization
+            predicted_lbs = self.avatar_net.get_weight_lbs()
+            default_lbs = self.avatar_net.get_default_lbs_weights()
+            weight_lbs_loss = l1_loss(predicted_lbs, default_lbs)
+            total_loss += weight_lbs_loss
+            batch_losses.update({
+                'lbs': weight_lbs_loss.item()
+            })
+            # deformation initialization
+            predicted_deformation = self.avatar_net.get_smpl_joints_deformation(items)
+            smpl_deformation = items["cano2live_jnt_mats_woRoot"][:22, :, :]
+            deformation_loss = l1_loss(predicted_deformation, smpl_deformation)
+            total_loss += deformation_loss
+            batch_losses.update({
+                'deformation': deformation_loss.item()
+            })
+
 
 
         total_loss.backward()
@@ -519,7 +537,7 @@ class AvatarTrainer:
                     print(log_info)
 
 
-                if self.iter_idx % 200 == 0 and self.iter_idx != 0:
+                if self.iter_idx % self.opt['train']['eval_interval'] == 0 and self.iter_idx != 0:
                     self.mini_test(pretraining = True)
 
                 if self.iter_idx == 5000:

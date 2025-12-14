@@ -9,15 +9,13 @@ class ImplicitNetwork(torch.nn.Module):
         d_out,
         width,
         depth,
-        geometric_init=True,
-        bias=1.0,
         weight_norm=True,
         multires=0,
         skip_layer=[],
         cond_layer=[],
-        cond_dim=69,
+        cond_dim=66,
         dim_cond_embed=-1,
-        representation="occ",
+        predict="deformation"
     ):
         super().__init__()
 
@@ -51,40 +49,16 @@ class ImplicitNetwork(torch.nn.Module):
             else:
                 lin = torch.nn.Linear(dims[l], out_dim)
 
-            if geometric_init:
-                if l == self.num_layers - 2:
-                    if representation == 'occ':
-                        torch.nn.init.normal_(lin.weight,
-                                              mean=-np.sqrt(np.pi) /
-                                                   np.sqrt(dims[l]),
-                                              std=0.0001)
-                        torch.nn.init.constant_(lin.bias, bias)
-                    elif representation == 'sdf':
-                        torch.nn.init.normal_(lin.weight,
-                                              mean=np.sqrt(np.pi) /
-                                                   np.sqrt(dims[l]),
-                                              std=0.0001)
-                        torch.nn.init.constant_(lin.bias, -bias)
-                elif multires > 0 and l == 0:
-                    torch.nn.init.constant_(lin.bias, 0.0)
-                    torch.nn.init.constant_(lin.weight[:, 3:], 0.0)
-                    torch.nn.init.normal_(lin.weight[:, :3], 0.0, np.sqrt(2) / np.sqrt(out_dim))
-                elif multires > 0 and l in self.skip_layer:
-                    torch.nn.init.constant_(lin.bias, 0.0)
-                    torch.nn.init.normal_(lin.weight, 0.0, np.sqrt(2) / np.sqrt(out_dim))
-                    torch.nn.init.constant_(lin.weight[:, -(dims[0] - 3) :], 0.0)
-                else:
-                    torch.nn.init.constant_(lin.bias, 0.0)
-                    torch.nn.init.normal_(lin.weight, 0.0, np.sqrt(2) / np.sqrt(out_dim))
-
             if weight_norm:
                 lin = torch.nn.utils.weight_norm(lin)
 
             setattr(self, "lin" + str(l), lin)
 
         self.softplus = torch.nn.Softplus(beta=100)
-
-    def forward(self, input, cond, mask=None):
+        self.predict = predict
+        self.d_out = d_out
+        self.tanh = torch.nn.Tanh()
+    def forward(self, input, cond=None, mask=None):
         """MPL query.
 
         Tensor shape abbreviation:
@@ -115,7 +89,6 @@ class ImplicitNetwork(torch.nn.Module):
         input_embed = input if self.embed_fn is None else self.embed_fn(input)
 
         if len(self.cond_layer):
-            cond = cond["smpl"]
             n_batch, n_cond = cond.shape
             input_cond = cond.unsqueeze(1).expand(n_batch, n_point, n_cond)
             input_cond = input_cond.reshape(n_batch * n_point, n_cond)
@@ -140,6 +113,8 @@ class ImplicitNetwork(torch.nn.Module):
 
             if l < self.num_layers - 2:
                 x = self.softplus(x)
+            elif self.predict == "deformation":
+                x[:3] = self.tanh(x[:3])
 
         # add placeholder for masked prediction
         if mask is not None:

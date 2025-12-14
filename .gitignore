@@ -1,4 +1,4 @@
-configs/
+configs/4d_dres/exchange/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -185,3 +185,6 @@ layga.py
 generate_pos_script.py
 pytorch_ssim/
 PoissonRecon/
+output_path/
+body_models/
+

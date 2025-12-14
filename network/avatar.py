@@ -3,18 +3,20 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-import pytorch3d.ops
+import trimesh
 import pytorch3d.transforms
 from pytorch3d.io import save_ply
 import cv2 as cv
 
 import config
 from network.styleunet.dual_styleunet import DualStyleUNet
+from network.deformation_graph import DeformationGraph
 from gaussians.gaussian_model import GaussianModel
 from gaussians.gaussian_renderer import render3
 from pytorch3d.structures import Meshes 
 from utils.net_util import read_map_mask
 from utils.general_utils import render_gaussian
+from network.weight_lbs import LBSOffsetDecoder
 class AvatarNet(nn.Module):
     def __init__(self, opt, layer=None, data_dir=None):
         super(AvatarNet, self).__init__()
@@ -48,6 +50,12 @@ class AvatarNet(nn.Module):
         if layer == "cloth":
             _, self.cloth_segment_mask = read_map_mask(self.data_dir + '/{}/cano_smpl_segment_map.exr'
                                      .format(self.smpl_pos_map))
+            if config.opt["model"]["virtual_bone"]:
+                self.deformation_graph = DeformationGraph(config.opt["model"]["deformation_graph_network"])
+                n_virtual_bones = self.deformation_graph.deformation_graph_verts.shape[1]
+                self.weight_lbs = LBSOffsetDecoder(total_bones=(55 + n_virtual_bones))
+                _, upper_mask = read_map_mask(self.data_dir + f'/{self.smpl_pos_map}/cano_smpl_segment_map.exr')
+                self.loose_mask = upper_mask[self.cano_smpl_mask]
         
         if layer =="body":
             _, self.smpl_body_mask = read_map_mask(self.data_dir + '/{}/cano_smpl_smplx_fix_offset_map.exr'.format(self.smpl_pos_map))
@@ -88,6 +96,24 @@ class AvatarNet(nn.Module):
         # save_ply(f"/local/home/zhiychen/AnimatableGaussain/gaussian_{layer}_mesh.ply", gaussian_pos, self.valid_faces)
         vertex_normal = gaussian_mesh.verts_normals_packed()
         return vertex_normal
+    
+    def get_weight_lbs(self):
+        weight_lbs = self.weight_lbs(self.cano_gaussian_model.get_xyz.unsqueeze(0))
+        weight_lbs = weight_lbs.squeeze(0) / (torch.sum(weight_lbs, dim=1) + 1e-5)         
+        return torch.permute(weight_lbs, (1, 0))
+
+    def get_default_lbs_weights(self):
+        n_gaussian_pts, _ =  self.lbs.shape
+        padding = torch.zeros((n_gaussian_pts, self.weight_lbs.total_bones - 55)).to(config.device)
+        default_lbs = torch.concat([self.lbs, padding], dim=1)
+        return default_lbs
+
+    def get_smpl_joints_deformation(self, items):
+        return self.deformation_graph(cond=items["smpl_body_theta"], nodes=items["cano_jnts"][:22].unsqueeze(0)).squeeze(0)
+    
+    def get_virtual_joints_deformation(self, items):
+        return self.deformation_graph(cond=items["smpl_body_theta"]).squeeze(0)
+
     def generate_mean_hands(self):
         # print('# Generating mean hands ...')
         import glob
@@ -122,27 +148,32 @@ class AvatarNet(nn.Module):
         # exit(1)
 
     def transform_cano2live(self, gaussian_vals, items):
-        pt_mats = torch.einsum('nj,jxy->nxy', self.lbs, items['cano2live_jnt_mats'])
-        gaussian_vals['positions'] = torch.einsum('nxy,ny->nx', pt_mats[..., :3, :3], gaussian_vals['positions']) + pt_mats[..., :3, 3]
-        rot_mats = pytorch3d.transforms.quaternion_to_matrix(gaussian_vals['rotations'])
-        rot_mats = torch.einsum('nxy,nyz->nxz', pt_mats[..., :3, :3], rot_mats)
-        gaussian_vals['rotations'] = pytorch3d.transforms.matrix_to_quaternion(rot_mats)
+        if not config.opt["model"]["virtual_bone"] or self.layer != "cloth":
+            pt_mats = torch.einsum('nj,jxy->nxy', self.lbs, items['cano2live_jnt_mats'])
+            gaussian_vals['positions'] = torch.einsum('nxy,ny->nx', pt_mats[..., :3, :3], gaussian_vals['positions']) + pt_mats[..., :3, 3]
+            rot_mats = pytorch3d.transforms.quaternion_to_matrix(gaussian_vals['rotations'])
+            rot_mats = torch.einsum('nxy,nyz->nxz', pt_mats[..., :3, :3], rot_mats)
+            gaussian_vals['rotations'] = pytorch3d.transforms.matrix_to_quaternion(rot_mats)
+        else:
+            virtual_bone_trans = self.get_virtual_joints_deformation(items)
+            loose_pt_mats = torch.einsum('nj,jxy->nxy', self.get_weight_lbs(), torch.concat([items['cano2live_jnt_mats'], virtual_bone_trans]))[self.loose_mask,:,:]
+            gaussian_vals['positions'][self.loose_mask] = torch.einsum('nxy,ny->nx', loose_pt_mats[..., :3, :3], gaussian_vals['positions'][self.loose_mask]) + loose_pt_mats[..., :3, 3]
+            loose_rot_mats = pytorch3d.transforms.quaternion_to_matrix(gaussian_vals['rotations'][self.loose_mask])
+            loose_rot_mats = torch.einsum('nxy,nyz->nxz', loose_pt_mats[..., :3, :3], loose_rot_mats)
+            gaussian_vals['rotations'][self.loose_mask] = pytorch3d.transforms.matrix_to_quaternion(loose_rot_mats)
 
+            tight_pt_mats = torch.einsum('nj,jxy->nxy', self.lbs, items['cano2live_jnt_mats'])[~self.loose_mask,:,:]
+            gaussian_vals['positions'][~self.loose_mask] = torch.einsum('nxy,ny->nx', tight_pt_mats[..., :3, :3], gaussian_vals['positions'][~self.loose_mask]) + tight_pt_mats[..., :3, 3]
+            tight_rot_mats = pytorch3d.transforms.quaternion_to_matrix(gaussian_vals['rotations'][~self.loose_mask])
+            tight_rot_mats = torch.einsum('nxy,nyz->nxz', tight_pt_mats[..., :3, :3], tight_rot_mats)
+            gaussian_vals['rotations'][~self.loose_mask] = pytorch3d.transforms.matrix_to_quaternion(tight_rot_mats)
         return gaussian_vals
 
     def get_positions(self, pose_map, return_map = False, with_offset=False, position_only=False):
         position_map, _ = self.position_net([self.position_style], pose_map[None], randomize_noise = False)
         front_position_map, back_position_map = torch.split(position_map, [3, 3], 1)
         position_map = torch.cat([front_position_map, back_position_map], 3)[0].permute(1, 2, 0)
-        if (self.opt.get("offset_mode")) == "tightness":
-            delta_position = self.cano_tightness_map[self.cano_smpl_mask] * position_map[self.cano_smpl_mask]
-        elif (self.opt.get("offset_mode")) == "tightness_scaled":
-            self.cano_tightness_map[self.cano_smpl_mask] *= 0.05/self.cano_tightness_map[self.cano_smpl_mask].mean()
-            delta_position = self.cano_tightness_map[self.cano_smpl_mask] * position_map[self.cano_smpl_mask]
-        elif self.opt.get("offset_mode") == "no_scale":
-            delta_position = position_map[self.cano_smpl_mask]
-        else:   
-            delta_position = 0.05 * position_map[self.cano_smpl_mask]
+        delta_position = 0.05 * position_map[self.cano_smpl_mask]
         positions = delta_position + self.cano_gaussian_model.get_xyz
         if self.layer and with_offset:
             positions = self.cano_offset_map[self.cano_smpl_mask] + positions
@@ -294,10 +325,6 @@ class AvatarNet(nn.Module):
             opacity = w * self.hand_opacity + (1.0 - w) * opacity
             scales = w * self.hand_scales + (1.0 - w) * scales
             rotations = w * self.hand_rotations + (1.0 - w) * rotations
-            # cano_pts[self.body_hand_idx] = self.hand_positions[self.body_hand_idx]
-            # opacity[self.body_hand_idx] = self.hand_opacity[self.body_hand_idx]
-            # scales[self.body_hand_idx] = self.hand_scales[self.body_hand_idx]
-            # rotations[self.body_hand_idx] = self.hand_rotations[self.body_hand_idx]
             colors = w * self.hand_colors + (1.0 - w) * colors
         # preparing gaussian values
         gaussian_vals = {
@@ -315,10 +342,6 @@ class AvatarNet(nn.Module):
         cano_gaussian_pos = gaussian_vals["positions"]
         gaussian_vals["cano_positions"] = cano_gaussian_pos
 
-        # select gaussian
-        # if not (self.selected_gaussian is None):
-        #     self.select_gaussian(gaussian_vals)
-        # transform to deformed space
         gaussian_vals["cano_rotations"] = gaussian_vals["rotations"].clone()
         gaussian_vals = self.transform_cano2live(gaussian_vals, items)
         if self.layer == "body":

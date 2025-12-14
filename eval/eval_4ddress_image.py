@@ -9,17 +9,17 @@ import shutil
 from eval.score import *
 
 cam_id = 18
-no_reg_dir = '/local/home/zhiychen/AnimatableGaussain/test_results/00185_test/layered_seg/cam_0001/batch_213281/both/rgb_map'
-no_seg_dir = '/local/home/zhiychen/AnimatableGaussain/test_results/00185_test/layered/cam_0001/batch_212801/both/rgb_map'
-ours_dir = '/local/home/zhiychen/AnimatableGaussain/test_results/00185_test/AG_new/cam_0001/batch_209160/both/rgb_map'
+no_reg_dir = '/local/home/zhiychen/AnimatableGaussain/test_results/00185_no_virtual_bone/layered_full_stage_1_less_opacity_loss/cam_0000/batch_239040/both/rgb_map'
+no_seg_dir = '/local/home/zhiychen/AnimatableGaussain/test_results/00185_no_virtual_bone/layered_full_stage_1_less_opacity_loss/cam_0000/batch_239040/both/rgb_map'
+ours_dir = '/local/home/zhiychen/AnimatableGaussain/test_results/00185_virtual_bones/virtual_bone_body_loss/cam_0000/batch_358560/both/rgb_map'
 # posevocab_dir = './test_results/subject00/posevocab/testing__cam_%03d/rgb_map' % cam_id
 # tava_dir = './test_results/subject00/tava/cam_%03d' % cam_id
-no_pene_dir = '/local/home/zhiychen/AnimatableGaussain/test_results/00185_test/layered_seg_body/cam_0001/batch_219120/both/rgb_map' 
+no_pene_dir = '/local/home/zhiychen/AnimatableGaussain/test_results/00185_no_virtual_bone/layered_full_stage_1_less_opacity_loss/cam_0000/batch_239040/both/rgb_map' 
 # slrf_dir = './test_results/subject00/slrf/cam_%03d' % cam_id
-gt_dir = '/data/zhiychen/AnimatableGaussain/test_data/multiviewRGC/4d_dress/00185/Inner/0016/images' 
-mask_dir = '/data/zhiychen/AnimatableGaussain/test_data/multiviewRGC/4d_dress/00185/Inner/0016/masks'
+gt_dir = '/data/zhiychen/AnimatableGaussain/test_data/multiviewRGC/4d_dress/00185/Inner/0004/images' 
+mask_dir = '/data/zhiychen/AnimatableGaussain/test_data/multiviewRGC/4d_dress/00185/Inner/0004/masks'
 
-frame_list = list(range(0, 300, 1))
+frame_list = list(range(0, 310, 1))
 
 if __name__ == '__main__':
     ours_metrics = Metrics()
@@ -51,11 +51,11 @@ if __name__ == '__main__':
         no_seg_img = (cv.imread(no_seg_dir + '/%08d.png' % frame_id, cv.IMREAD_UNCHANGED) / 255.).astype(np.float32)
         gt_img = (cv.imread(gt_dir + '/%05d.png' % frame_id, cv.IMREAD_UNCHANGED) / 255.).astype(np.float32)
         mask_img = cv.imread(mask_dir + '/%05d.png' % frame_id, cv.IMREAD_UNCHANGED) > 128
-        gt_img[~mask_img] = 1
-        ours_img[~mask_img] = 1
-        no_reg_img[~mask_img] = 1
-        no_pene_img[~mask_img] = 1
-        no_seg_img[~mask_img] = 1
+        gt_img[~mask_img] = 0
+        ours_img[~mask_img] = 0
+        no_reg_img[~mask_img] = 0
+        no_pene_img[~mask_img] = 0
+        no_seg_img[~mask_img] = 0
         ours_img_cropped, no_reg_img_cropped, no_pene_img_cropped, no_seg_img_cropped, gt_img_cropped = \
             crop_image(
                 mask_img[:, :, 0],

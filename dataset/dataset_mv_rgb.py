@@ -179,7 +179,6 @@ class MvRgbDatasetBase(Dataset):
                 data_item['smpl_pos_map'] = smpl_pos_maps
                 
 
-
         if self.load_smpl_nml_map:
             smpl_nml_map = cv.imread(self.data_dir + '/smpl_nml_map/%08d.jpg' % pose_idx, cv.IMREAD_UNCHANGED)
             smpl_nml_map = (smpl_nml_map / 255.).astype(np.float32)
@@ -204,6 +203,7 @@ class MvRgbDatasetBase(Dataset):
         data_item['cano_smpl_center'] = self.cano_smpl_center
         data_item['cano_bounds'] = self.cano_bounds
         data_item['smpl_faces'] = self.smpl_faces
+        data_item['smpl_body_theta'] = torch.concat([self.smpl_data['global_orient'][pose_idx][None], self.smpl_data['body_pose'][pose_idx][None]], dim=1).reshape((1,66))
         min_xyz = live_smpl.vertices[0].min(0)[0] - 0.15
         max_xyz = live_smpl.vertices[0].max(0)[0] + 0.15
         live_bounds = torch.stack([min_xyz, max_xyz], 0).to(torch.float32).numpy()

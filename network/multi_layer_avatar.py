@@ -1,13 +1,11 @@
-import platform
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-import pytorch3d.ops
 import pytorch3d.transforms
 import cv2 as cv
 from sympy import rotations
-
+import trimesh
 import config
 from network.avatar import AvatarNet
 from network.styleunet.dual_styleunet import DualStyleUNet
@@ -402,6 +400,14 @@ class MultiLAvatarNet(nn.Module):
             color_map_l.append(color_map)
         return torch.concat(colors_l, dim=0), torch.concat(color_map_l, dim=0)
     
+    def get_weight_lbs(self):
+        return self.layers_nn["cloth"].get_weight_lbs()
+
+    def get_default_lbs_weights(self):
+        return self.layers_nn["cloth"].get_default_lbs_weights()
+
+    def get_smpl_joints_deformation(self, items):
+        return self.layers_nn["cloth"].get_smpl_joints_deformation(items)
 
     def pixelwise_dominant_map_custom(self, tensor: torch.Tensor, mask, color_map=None) -> torch.Tensor:
         """

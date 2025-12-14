@@ -20,8 +20,8 @@ def create_video_with_imageio(image_paths, output_path, fps=24):
     print(f"Video saved to {output_path}")
 
 # Define the directory containing images
-image_folder = "/local/home/zhiychen/AnimatableGaussain/exchange_results/134185/face_lpips_segment_face_less_laplacian_layered_seg_body/training_00156_train_cam_0009/batch_144402/both/rgb_map"
-video_name = './video/00185_cloth_color_animation.mp4'
+image_folder = "/local/home/zhiychen/AnimatableGaussain/test_results/00185_no_virtual_bone/layered_full_stage_1_less_opacity_loss/cam_0001/batch_239040/both/rgb_map"
+video_name = './video/00185_no_virtual_bones.mp4'
 # Get all the image files in the folder
 images = [os.path.join(image_folder, img) for img in os.listdir(image_folder) if img.endswith(".png")]
 # images = [img for img in os.listdir(image_folder) if img.endswith(“normal.png”) or img.endswith(“.jpg”)]

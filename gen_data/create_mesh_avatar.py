@@ -19,15 +19,15 @@ from smplxd import SMPLX
 
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
-smplx_body_model_fit = SMPLX('body_models/smplx', gender='neutral', num_pca_comps=12,
+smplx_body_model_fit = SMPLX('smpl_files/smplx', gender='neutral', num_pca_comps=12,
                             use_pca=True, flat_hand_mean=False, use_face_contour=False).to(device)
 
-smplx_body_model = SMPLX('body_models/smplx', gender='neutral', num_pca_comps=12,
+smplx_body_model = SMPLX('smpl_files/smplx', gender='neutral', num_pca_comps=12,
                             use_pca=True, flat_hand_mean=True, use_face_contour=False).to(device)
-# smplx_body_model_fit = SMPLX('body_models/smplx', gender='neutral', use_pca=False,
+# smplx_body_model_fit = SMPLX('smpl_files/smplx', gender='neutral', use_pca=False,
 #                             flat_hand_mean=False, use_face_contour=True).to(device)
 
-# smplx_body_model = SMPLX('body_models/smplx', gender='neutral',
+# smplx_body_model = SMPLX('smpl_files/smplx', gender='neutral',
 #                             use_pca=False, flat_hand_mean=True, use_face_contour=True).to(device)
 
 seg = json.load(open('smplx_vert_segmentation.json'))

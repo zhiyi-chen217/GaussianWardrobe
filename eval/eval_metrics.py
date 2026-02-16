@@ -11,10 +11,7 @@ from eval.score import *
 cam_id = 18
 AG_dir = '/local/home/zhiychen/AnimatableGaussain/test_results/actor01_novel_view/actor01_AG/cam_0128/batch_204961/both/rgb_map'
 ours_dir = '/local/home/zhiychen/AnimatableGaussain/test_results/actor01_novel_view/actor01_body_loss/cam_0128/batch_231281/both/rgb_map'
-# posevocab_dir = './test_results/subject00/posevocab/testing__cam_%03d/rgb_map' % cam_id
-# tava_dir = './test_results/subject00/tava/cam_%03d' % cam_id
 layga_dir = '/local/home/zhiychen/AnimatableGaussain/test_results/actor01_novel_view/actor01_layga/cam_0128/batch_185432/both/rgb_map'
-# slrf_dir = './test_results/subject00/slrf/cam_%03d' % cam_id
 gt_dir = '/data/zhiychen/ActorHQ/Actor01/Sequence1/4x/rgbs/Cam128' 
 mask_dir = '/data/zhiychen/ActorHQ/Actor01/Sequence1/4x/masks/Cam128'
 
@@ -34,19 +31,11 @@ if __name__ == '__main__':
     shutil.rmtree('./tmp_quant')
     os.makedirs('./tmp_quant/ours', exist_ok = True)
     os.makedirs('./tmp_quant/AG', exist_ok=True)
-    # os.makedirs('./tmp_quant/posevocab', exist_ok = True)
-    # os.makedirs('./tmp_quant/slrf', exist_ok = True)
-    # os.makedirs('./tmp_quant/arah', exist_ok = True)
-    # os.makedirs('./tmp_quant/tava', exist_ok = True)
     os.makedirs('./tmp_quant/gt', exist_ok = True)
     AG_psnr = []
     ours_psnr = []
     for frame_id in tqdm(frame_list):
         ours_img = (cv.imread(ours_dir + '/%08d.png' % frame_id, cv.IMREAD_UNCHANGED) / 255.).astype(np.float32)
-        # posevocab_img = (cv.imread(posevocab_dir + '/%08d.jpg' % frame_id, cv.IMREAD_UNCHANGED) / 255.).astype(np.float32)
-        # slrf_img = (cv.imread(slrf_dir + '/%08d.png' % frame_id, cv.IMREAD_UNCHANGED) / 255.).astype(np.float32)
-        # tava_img = (cv.imread(tava_dir + '/%d.jpg' % frame_id, cv.IMREAD_UNCHANGED) / 255.).astype(np.float32)
-        # arah_img = (cv.imread(arah_dir + '/%d.jpg' % frame_id, cv.IMREAD_UNCHANGED) / 255.).astype(np.float32)
         AG_img = (cv.imread(AG_dir + '/%08d.png' % frame_id, cv.IMREAD_UNCHANGED) / 255.).astype(np.float32)
         layga_img = (cv.imread(layga_dir + '/%08d.png' % frame_id, cv.IMREAD_UNCHANGED) / 255.).astype(np.float32)
         gt_img = (cv.imread(gt_dir + '/Cam128_rgb%06d.jpg' % frame_id, cv.IMREAD_UNCHANGED) / 255.).astype(np.float32)
@@ -60,9 +49,6 @@ if __name__ == '__main__':
                 mask_img,
                 512,
                 ours_img,
-                # posevocab_img,
-                # slrf_img,
-                # tava_img,
                 layga_img,
                 AG_img,
                 gt_img
@@ -70,9 +56,6 @@ if __name__ == '__main__':
 
         cv.imwrite('./tmp_quant/ours/%08d.png' % frame_id, (ours_img_cropped * 255).astype(np.uint8))
         cv.imwrite('./tmp_quant/AG/%08d.png' % frame_id, (AG_img_cropped * 255).astype(np.uint8))
-        # cv.imwrite('./tmp_quant/posevocab/%08d.png' % frame_id, (posevocab_img_cropped * 255).astype(np.uint8))
-        # cv.imwrite('./tmp_quant/slrf/%08d.png' % frame_id, (slrf_img_cropped * 255).astype(np.uint8))
-        # cv.imwrite('./tmp_quant/tava/%08d.png' % frame_id, (tava_img_cropped * 255).astype(np.uint8))
         cv.imwrite('./tmp_quant/layga/%08d.png' % frame_id, (layga_img_cropped * 255).astype(np.uint8))
         cv.imwrite('./tmp_quant/gt/%08d.png' % frame_id, (gt_img_cropped * 255).astype(np.uint8))
 
@@ -88,38 +71,14 @@ if __name__ == '__main__':
             AG_metrics.lpips += compute_lpips(AG_img_cropped, gt_img_cropped)
             AG_metrics.count += 1
 
-
-        # if posevocab_img is not None:
-        #     posevocab_metrics.psnr += compute_psnr(posevocab_img, gt_img)
-        #     posevocab_metrics.ssim += compute_ssim(posevocab_img, gt_img)
-        #     posevocab_metrics.lpips += compute_lpips(posevocab_img_cropped, gt_img_cropped)
-        #     posevocab_metrics.count += 1
-        #
-        # if slrf_img is not None:
-        #     slrf_metrics.psnr += compute_psnr(slrf_img, gt_img)
-        #     slrf_metrics.ssim += compute_ssim(slrf_img, gt_img)
-        #     slrf_metrics.lpips += compute_lpips(slrf_img_cropped, gt_img_cropped)
-        #     slrf_metrics.count += 1
-        #
         if layga_img is not None:
             layga_metrics.psnr += compute_psnr(layga_img, gt_img)
             layga_metrics.ssim += compute_ssim(layga_img, gt_img)
             layga_metrics.lpips += compute_lpips(layga_img_cropped, gt_img_cropped)
             layga_metrics.count += 1
-        #
-        # if tava_img is not None:
-        #     tava_metrics.psnr += compute_psnr(tava_img, gt_img)
-        #     tava_metrics.ssim += compute_ssim(tava_img, gt_img)
-        #     tava_metrics.lpips += compute_lpips(tava_img_cropped, gt_img_cropped)
-        #     tava_metrics.count += 1
-        #
     print('Ours metrics: ', ours_metrics)
     print('AG metrics: ', AG_metrics)
     print('LayGA metrics', layga_metrics)
-    # print('PoseVocab metrics: ', posevocab_metrics)
-    # print('SLRF metrics: ', slrf_metrics)
-    # print('ARAH metrics: ', arah_metrics)
-    # print('TAVA metrics: ', tava_metrics)
 
     print('--- Ours ---')
     os.system('python -m pytorch_fid --device cuda {} {}'.format('./tmp_quant/ours', './tmp_quant/gt'))
@@ -127,11 +86,3 @@ if __name__ == '__main__':
     os.system('python -m pytorch_fid --device cuda {} {}'.format('./tmp_quant/AG', './tmp_quant/gt'))
     print('--- PoseVocab ---')
     os.system('python -m pytorch_fid --device cuda {} {}'.format('./tmp_quant/layga', './tmp_quant/gt'))
-    # print('--- SLRF ---')
-    # os.system('python -m pytorch_fid --device cuda {} {}'.format('./tmp_quant/slrf', './tmp_quant/gt'))
-    # print('--- ARAH ---')
-    # os.system('python -m pytorch_fid --device cuda {} {}'.format('./tmp_quant/arah', './tmp_quant/gt'))
-    # print('--- TAVA ---')
-    # os.system('python -m pytorch_fid --device cuda {} {}'.format('./tmp_quant/tava', './tmp_quant/gt'))
-    #
-    #

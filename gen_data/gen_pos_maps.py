@@ -1,4 +1,9 @@
 import os
+import sys
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_dir, '..'))
+
+sys.path.insert(0, project_root)
 from copyreg import pickle
 
 import numpy as np
@@ -9,7 +14,6 @@ import trimesh
 import yaml
 import tqdm
 from trimesh.graph import neighbors
-
 import smplxd as smplx
 from network.volume import CanoBlendWeightVolume
 from utils.renderer.renderer_pytorch3d import Renderer
@@ -17,6 +21,7 @@ from utils.smpl_util import smplx_model
 import config
 import pickle as pkl
 import pytorch3d.ops as ops
+
 
 def find_neighbor(pixel_idx, pix_to_face, mask, mesh, x, y):
     dx_l = [-1, -1, 1, 1]

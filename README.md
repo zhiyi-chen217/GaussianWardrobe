@@ -27,30 +27,60 @@ cd ../..
 cd network/styleunet
 python setup.py install
 cd ../..
+
+# install pytorch3d
+git clone https://github.com/facebookresearch/pytorch3d.git
+cd pytorch3d && pip install -e .
+
 ```
 2. Download [SMPL-X](https://smpl-x.is.tue.mpg.de/download.php) model, and place pkl files to ```./smpl_files/smplx```.
-# Data Preparation
+3. Download [Lpips-weight](https://github.com/richzhang/PerceptualSimilarity/tree/master/lpips/weights/v0.1) and place pth files to ```.network/lpips/weights/v0.1```
 
-## Customized Dataset
+# Data Preparation
+We have experimented with[4D-Dress](https://eth-ait.github.io/4d-dress/) and [ActorsHQ](https://www.actors-hq.com/dataset) datasets
+Following [GEN_DATA.md](./gen_data/GEN_DATA.md)
+*Note for ActorsHQ dataset: 1. **SMPL-X Registration.** We used the smplx registration offered [here](https://drive.google.com/file/d/1DVk3k-eNbVqVCkLhGJhD_e9ILLCwhspR/view?usp=sharing) by [Animatable Gaussians](http://animatable-gaussians.github.io/)
 
 # Avatar Training
-
-
-# Avatar Animation
-
-# Virtual Try-on
-
+Take the subject 00134 from [4D-Dress](https://eth-ait.github.io/4d-dress/) as an example:
+0. Prepare the training dataset using the instruction from the previous step
+1. Download its checkpoint or start from scratch
+2. Set the corresponding data_dir and net_ckpt_dir in the train section in ./configs/4d_dress/avatar.yaml
 3. Run:
 ```
-python main_avatar.py -c configs/avatarrex_zzr/avatar.yaml --mode=test
+python main_avatar.py -c configs/4d_dress/avatar.yaml --mode=train
 ```
-You will see the animation results like below in `./test_results/avatarrex_zzr/avatar`.
 
-https://github.com/lizhe00/AnimatableGaussians/assets/61936670/5aad39d2-2adb-4b7b-ab90-dea46240344a
+# Avatar Animation
+Take the subject 00134 from [4D-Dress](https://eth-ait.github.io/4d-dress/) as an example:
+0. Download the checkpoint for the subject
+1. Prepare the testing dataset according to [GEN_DATA.md](./gen_data/GEN_DATA.md)
+2. Set the corresponding data_dir and prev_ckpt in the test section in ./configs/4d_dress/avatar.yaml
+2. Run:
+```
+python main_avatar.py -c configs/4d_dress/avatar.yaml --mode=test
+```
+# Virtual Try-on
+Take the subject 00134 and 00140 from [4D-Dress](https://eth-ait.github.io/4d-dress/) as an example
+We provided a script ``generate_pos_script.py`` for generating the exchange dataset:
+0. Update the macros in ``generate_pos_script.py``
+1. Run ``generate_pos_script.py`` for the target combination
+2. Run:
+```
+python main_avatar.py -c configs/4d_dress/exchange/134_140.yaml --mode=exchange_cloth 
+```
+
+For other combinations please follow the format in the ``exchange/134_140.yaml`` configuration files
 
 # Evaluation
+We provide evaluation metrics in [eval/eval_metrics.py](eval/eval_metrics.py).
 
-
+0. Generate the testing pose images
+1. Then update the data_dir macros in [eval/eval_metrics.py](eval/eval_metrics.py).
+2. Run
+```
+python eval/eval_metrics.py
+```
 # Acknowledgement
 
 # Citation

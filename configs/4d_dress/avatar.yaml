@@ -6,7 +6,7 @@ train:
   data:
     layers: ["body", "cloth"]
     subject_name: 127
-    data_dir: /data/zhiychen/AnimatableGaussain/train_data/multiviewRGC/4d_dress/00134/Inner
+    data_dir: /data/zhiychen/AnimatableGaussain/train_data/multiviewRGC/4d_dress/00127/Inner
     used_cam_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     # frame_range:
     # - 0
@@ -19,7 +19,7 @@ train:
   pretrained_dir: null
   net_ckpt_dir: /mnt/work/Clothes4D/zhiychen/results/4d_dress/00134/body_color_new
   inner_ckpt_dir: null
-  prev_ckpt: /mnt/work/Clothes4D/zhiychen/results/4d_dress/00134/body_loss/epoch_latest
+  prev_ckpt: null
   ckpt_interval:
     epoch: 3
     batch: 1000

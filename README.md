@@ -65,7 +65,7 @@ Some example test animation examples are provided under ``assets`` folder, e.g. 
 
 # Virtual Try-on
 Take the subject 00134 and 00140 from [4D-Dress](https://eth-ait.github.io/4d-dress/) as an example
-We provided a script ``generate_pos_script.py`` for generating the exchange dataset:
+We provided a script ``generate_pos_script.py`` for generating the exchange dataset for [4D-Dress](https://eth-ait.github.io/4d-dress/) subjects:
 0. Update the macros in ``generate_pos_script.py``
 1. Run ``generate_pos_script.py`` for the target combination
 2. Run:

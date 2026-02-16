@@ -183,7 +183,6 @@ network/lpips/
 *.png
 .vscode
 pytorch3d/
-smplxd
 layga.py
 generate_pos_script.py
 pytorch_ssim/

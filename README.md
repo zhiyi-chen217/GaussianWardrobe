@@ -1,7 +1,7 @@
 
 # <b> Gaussian Wardrobe: </b>:Compositional 3D Gaussian Avatars for Free-Form Virtual Try-on
 
-***Abstract**: 
+**Abstract**: 
 
 We introduce Gaussian Wardrobe, a novel framework to digitalize compositional 3D neural avatars from multi-view videos.
 Existing methods for 3D neural avatars typically treat the human body and clothing as an inseparable entity. 

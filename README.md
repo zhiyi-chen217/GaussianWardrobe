@@ -60,8 +60,15 @@ Take the subject 00134 from [4D-Dress](https://eth-ait.github.io/4d-dress/) as a
 ```
 python main_avatar.py -c configs/4d_dress/avatar.yaml --mode=test
 ```
-https://github.com/zhiyi-chen217/GaussianWardrobe/blob/multilayer/assets/156_test.mp4
-https://github.com/zhiyi-chen217/GaussianWardrobe/blob/multilayer/assets/185_ours.mp4
+<video src="https://github.com/zhiyi-chen217/GaussianWardrobe/blob/multilayer/assets/156_test.mp4" width="600" controls>
+  Your browser does not support the video tag.
+</video>
+
+<video src="https://github.com/zhiyi-chen217/GaussianWardrobe/blob/multilayer/assets/185_ours.mp4" width="600" controls>
+  Your browser does not support the video tag.
+</video>
+
+
 # Virtual Try-on
 Take the subject 00134 and 00140 from [4D-Dress](https://eth-ait.github.io/4d-dress/) as an example
 We provided a script ``generate_pos_script.py`` for generating the exchange dataset:

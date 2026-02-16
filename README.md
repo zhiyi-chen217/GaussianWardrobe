@@ -60,14 +60,8 @@ Take the subject 00134 from [4D-Dress](https://eth-ait.github.io/4d-dress/) as a
 ```
 python main_avatar.py -c configs/4d_dress/avatar.yaml --mode=test
 ```
-<video src="https://github.com/zhiyi-chen217/GaussianWardrobe/blob/multilayer/assets/156_test.mp4" width="600" controls>
-  Your browser does not support the video tag.
-</video>
 
-<video src="https://github.com/zhiyi-chen217/GaussianWardrobe/blob/multilayer/assets/185_ours.mp4" width="600" controls>
-  Your browser does not support the video tag.
-</video>
-
+Some example test animation examples are provided under ``assets`` folder, e.g. 156_test.mp4 and 185_ours.mp4
 
 # Virtual Try-on
 Take the subject 00134 and 00140 from [4D-Dress](https://eth-ait.github.io/4d-dress/) as an example
@@ -79,8 +73,7 @@ We provided a script ``generate_pos_script.py`` for generating the exchange data
 python main_avatar.py -c configs/4d_dress/exchange.yaml --mode=exchange_cloth 
 ```
 
-https://github.com/zhiyi-chen217/GaussianWardrobe/blob/multilayer/assets/185_134_full.mp4
-http://github.com/zhiyi-chen217/GaussianWardrobe/blob/multilayer/assets/127_134_outer.mp4
+Some example exchange examples are provided under ``assets`` folder, e.g. 185_134_full.mp4 and 127_134_outer.mp4
 
 For other combinations please follow the format in the ``configs/4d_dress/exchange.yaml`` configuration files
 

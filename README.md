@@ -67,10 +67,10 @@ We provided a script ``generate_pos_script.py`` for generating the exchange data
 1. Run ``generate_pos_script.py`` for the target combination
 2. Run:
 ```
-python main_avatar.py -c configs/4d_dress/exchange/134_140.yaml --mode=exchange_cloth 
+python main_avatar.py -c configs/4d_dress/exchange.yaml --mode=exchange_cloth 
 ```
 
-For other combinations please follow the format in the ``exchange/134_140.yaml`` configuration files
+For other combinations please follow the format in the ``configs/4d_dress/exchange.yaml`` configuration files
 
 # Evaluation
 We provide evaluation metrics in [eval/eval_metrics.py](eval/eval_metrics.py).
@@ -82,7 +82,9 @@ We provide evaluation metrics in [eval/eval_metrics.py](eval/eval_metrics.py).
 python eval/eval_metrics.py
 ```
 # Acknowledgement
+Our code is based on the following repos:
+- [Animatable Gaussians](http://animatable-gaussians.github.io/)
+- [3D Gaussian Splatting](https://github.com/graphdeco-inria/diff-gaussian-rasterization) and its [adapted version](https://github.com/ashawkey/diff-gaussian-rasterization)
+- [StyleAvatar](https://github.com/LizhenWangT/StyleAvatar)
 
-# Citation
-```
 

@@ -39,9 +39,10 @@ cd pytorch3d && pip install -e .
 3. Download [Lpips-weight](https://github.com/richzhang/PerceptualSimilarity/tree/master/lpips/weights/v0.1) and place pth files to ```.network/lpips/weights/v0.1```
 
 # Data Preparation
-We have experimented with[4D-Dress](https://eth-ait.github.io/4d-dress/) and [ActorsHQ](https://www.actors-hq.com/dataset) datasets
+We have experimented with [4D-Dress](https://eth-ait.github.io/4d-dress/) and [ActorsHQ](https://www.actors-hq.com/dataset) datasets
 Following [GEN_DATA.md](./gen_data/GEN_DATA.md)
-*Note for ActorsHQ dataset: 1. **SMPL-X Registration.** We used the smplx registration offered [here](https://drive.google.com/file/d/1DVk3k-eNbVqVCkLhGJhD_e9ILLCwhspR/view?usp=sharing) by [Animatable Gaussians](http://animatable-gaussians.github.io/)
+
+Note for ActorsHQ dataset: 1. **SMPL-X Registration.** We used the smplx registration offered [here](https://drive.google.com/file/d/1DVk3k-eNbVqVCkLhGJhD_e9ILLCwhspR/view?usp=sharing) by [Animatable Gaussians](http://animatable-gaussians.github.io/)
 
 # Avatar Training
 Take the subject 00134 from [4D-Dress](https://eth-ait.github.io/4d-dress/) as an example:

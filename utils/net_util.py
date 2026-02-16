@@ -1,8 +1,21 @@
 import torch
 import numpy as np
 import config
+import torch.nn as nn
+import cv2 as cv
+class GMoF(nn.Module):
+    def __init__(self, rho=1):
+        super(GMoF, self).__init__()
+        self.rho = rho
 
+    def extra_repr(self):
+        return 'rho = {}'.format(self.rho)
 
+    def forward(self, residual):
+        squared_res = residual ** 2
+        dist = torch.div(squared_res, squared_res + self.rho ** 2)
+        return self.rho ** 2 * dist
+    
 def to_cuda(items: dict, add_batch = False, precision = torch.float32):
     items_cuda = dict()
     for key, data in items.items():
@@ -61,3 +74,18 @@ def generate_volume_points(bounds, testing_res = (256, 256, 256)):
     pts = pts * (bounds[1] - bounds[0]) + bounds[0]
 
     return pts
+
+def read_map_mask(map_path):
+    cano_map = cv.imread(map_path, cv.IMREAD_UNCHANGED)
+    cano_map = torch.from_numpy(cano_map).to(torch.float32).to(config.device)
+    cano_mask = torch.linalg.norm(cano_map, dim = -1) > 0.
+    return cano_map, cano_mask
+
+def process_pos_map(map_path):
+    smpl_pos_map = cv.imread(map_path, cv.IMREAD_UNCHANGED)
+    if smpl_pos_map.shape == (1024, 2048, 3):
+        smpl_pos_map = cv.resize(smpl_pos_map, (1024, 512))
+    pos_map_size = smpl_pos_map.shape[1] // 2
+    smpl_pos_map = np.concatenate([smpl_pos_map[:, :pos_map_size], smpl_pos_map[:, pos_map_size:]], 2)
+    smpl_pos_map = smpl_pos_map.transpose((2, 0, 1))
+    return smpl_pos_map

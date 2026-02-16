@@ -75,10 +75,14 @@ def solve(num_joints, point_interpolant_exe):
 
 
 @torch.no_grad()
-def calc_cano_weight_volume(data_dir, gender = 'neutral'):
-    smpl_params = np.load(data_dir + '/smpl_params.npz')
+def calc_cano_weight_volume(data_dir, gender = 'neutral', zero_shape=False):
+    smpl_params = np.load(data_dir + '/smpl_params.npz', allow_pickle=True)
     smpl_shape = torch.from_numpy(smpl_params['betas'][0]).to(torch.float32)
-    smpl_model = smplx.SMPLX(model_path = config.PROJ_DIR + '/smpl_files/smplx', gender = gender, use_pca = False, num_pca_comps = 45, flat_hand_mean = True, batch_size = 1)
+    if zero_shape:
+        smpl_shape = torch.zeros((10,)).to(torch.float32)
+    smpl_model = smplx.SMPLX(model_path = config.PROJ_DIR + '/smpl_files/smplx', gender = gender, use_pca = True, num_pca_comps = 12, flat_hand_mean = True, batch_size = 1)
+    # smpl_model = smplx.SMPLX(model_path = config.PROJ_DIR + '/smpl_files/smplx', gender = gender, use_pca = False, num_pca_comps = 45, flat_hand_mean = True, batch_size = 1)
+
 
     def get_grid_points(bounds, res):
         # voxel_size = (bounds[1] - bounds[0]) / (np.array(res, np.float32) - 1)
@@ -112,7 +116,7 @@ def calc_cano_weight_volume(data_dir, gender = 'neutral'):
     )
 
     compute_lbs_grad(cano_smpl_trimesh, smpl_model.lbs_weights.cpu().numpy())
-    solve(smpl_model.lbs_weights.shape[-1], "./bins/PointInterpolant")
+    solve(smpl_model.lbs_weights.shape[-1], "/local/home/zhiychen/AnimatableGaussain/PoissonRecon/Bin/Linux/PointInterpolant")
 
     ### NOTE concatenate all grids
     fn_list = sorted(list(glob.glob(os.path.join(tmp_dir, 'grid_*.grd'))))
@@ -161,50 +165,16 @@ def calc_cano_weight_volume(data_dir, gender = 'neutral'):
     dists = dists.reshape(res).astype(np.float32)
     ori_weights = ori_weights.reshape(list(res) + [-1]).astype(np.float32)
 
-    np.savez(data_dir + '/cano_weight_volume.npz',
+    weight_volume_name = '/cano_weight_volume.npz'
+    if zero_shape:
+        weight_volume_name = '/cano_weight_volume_shape_zero.npz'
+    np.savez(data_dir + weight_volume_name,
              diff_weight_volume = diff_weights.astype(np.float32),
              ori_weight_volume = ori_weights.astype(np.float32),
              sdf_volume = -dists,
              volume_bounds = volume_bounds,
              smpl_bounds = smpl_bounds,
              center = center)
-
-    # # debug
-    # from network.volume import CanoBlendWeightVolume
-    # from utils.smpl_util import skinning
-    # weight_volume = CanoBlendWeightVolume(data_dir + '/cano_weight_volume.npz')
-    # pts_w = weight_volume.forward_weight(torch.from_numpy(cano_smpl_trimesh.vertices).to(torch.float32).to(config.device))
-    # pts_w = pts_w[0].cpu().numpy()
-    # np.savetxt('../debug/pts_w_query.txt', pts_w, fmt = '%.8f')
-    # np.savetxt('../debug/pts_w_val.txt', smpl_model.lbs_weights.cpu().numpy(), fmt = '%.8f')
-    #
-    # # smpl_data = np.load(data_dir + '/smpl_params.npz')
-    # smpl_data = np.load('F:/pose/thuman4/pose_01.npz')
-    # smpl_data = {k: torch.from_numpy(v).to(torch.float32) for k, v in smpl_data.items()}
-    # frame_idx = 61
-    # posed_smpl = smpl_model.forward(
-    #     betas = smpl_data['betas'],
-    #     global_orient = smpl_data['global_orient'][frame_idx: frame_idx+1],
-    #     transl = smpl_data['transl'][frame_idx: frame_idx+1],
-    #     body_pose = smpl_data['body_pose'][frame_idx: frame_idx+1]
-    # )
-    # jnt_mats = torch.matmul(posed_smpl.A, cano_smpl.A.inverse())
-    # pts_w = torch.from_numpy(pts_w).to(torch.float32)
-    # cano_verts = torch.from_numpy(cano_smpl_trimesh.vertices).to(torch.float32)
-    # posed_v_query = skinning(cano_verts[None], pts_w[None], jnt_mats)
-    # posed_v_ori = skinning(cano_verts[None], smpl_model.lbs_weights[None], jnt_mats)
-    # posed_smpl_query = trimesh.Trimesh(posed_v_query.cpu().numpy()[0], smpl_model.faces, process = False)
-    # posed_smpl_ori = trimesh.Trimesh(posed_v_ori.cpu().numpy()[0], smpl_model.faces, process = False)
-    # posed_smpl_query.export('../debug/posed_smpl_query.obj')
-    # posed_smpl_ori.export('../debug/posed_smpl_ori.obj')
-    # cano_smpl_trimesh.export('../debug/cano_smpl.obj')
-    #
-    # cano_mesh = trimesh.load('../debug/cano_mesh.ply', process = False)
-    # cano_mesh_v = torch.from_numpy(cano_mesh.vertices).to(torch.float32)
-    # cano_mesh_lbs = weight_volume.forward_weight(cano_mesh_v.to(config.device)).cpu()[0]
-    # posed_mesh_v_query = skinning(cano_mesh_v[None], cano_mesh_lbs[None], jnt_mats)
-    # posed_mesh_query = trimesh.Trimesh(posed_mesh_v_query[0].cpu().numpy(), cano_mesh.faces, process = False)
-    # posed_mesh_query.export('../debug/posed_mesh_query.obj')
 
 
 if __name__ == '__main__':
@@ -213,9 +183,10 @@ if __name__ == '__main__':
 
     arg_parser = ArgumentParser()
     arg_parser.add_argument('-c', '--config_path', type = str, help = 'Configuration file path.')
+    arg_parser.add_argument('-z', '--zero_shape', action='store_true', default=False, help='Render color or not.')
     args = arg_parser.parse_args()
 
     opt = yaml.load(open(args.config_path, encoding = 'UTF-8'), Loader = yaml.FullLoader)
     data_dir = opt['train']['data']['data_dir']
 
-    calc_cano_weight_volume(data_dir, gender = 'neutral')
+    calc_cano_weight_volume(data_dir, gender = 'neutral', zero_shape=args.zero_shape)

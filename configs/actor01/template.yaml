@@ -3,8 +3,8 @@ train:
   dataset: MvRgbDatasetActorsHQ
   data:
     subject_name: actor01
-    data_dir: Z:/Data/MultiviewRGB/ActorsHQ/Actor01/Sequence1
-    frame_range: &id001
+    data_dir: /data/zhiychen/ActorHQ/Actor05/Sequence1
+    frame_range: 
     - 48
     - 49
     - 1

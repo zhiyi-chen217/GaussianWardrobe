@@ -6,14 +6,17 @@ import numpy as np
 import cv2 as cv
 import torch
 from torch.utils.data import Dataset
-
+import json
+from numpy.linalg import inv
 import smplx
 import config
 import utils.nerf_util as nerf_util
 import utils.visualize_util as visualize_util
 import dataset.commons as commons
+from utils.sh_utils import RGB2GRAY
 from PIL import Image
-
+from utils.smpl_util import smplx_model
+from utils.net_util import process_pos_map
 class MvRgbDatasetBase(Dataset):
     @torch.no_grad()
     def __init__(
@@ -25,23 +28,35 @@ class MvRgbDatasetBase(Dataset):
         subject_name = None,
         load_smpl_pos_map = False,
         load_smpl_nml_map = False,
-        mode = '3dgs'
+        mode = '3dgs',
+        layers = None,
+        use_label = False,
+        use_body_label = False,
+        use_normal = False,
     ):
         super(MvRgbDatasetBase, self).__init__()
 
         self.data_dir = data_dir
         self.training = training
         self.subject_name = subject_name
+        self.layers = layers
         if self.subject_name is None:
             self.subject_name = os.path.basename(self.data_dir)
         self.load_smpl_pos_map = load_smpl_pos_map
         self.load_smpl_nml_map = load_smpl_nml_map
         self.mode = mode  # '3dgs' or 'nerf'
-
+        self.use_label = use_label
+        self.use_body_label = use_body_label
+        self.use_normal = use_normal
         self.load_cam_data()
         self.load_smpl_data()
-        self.smpl_pos_map = config.opt.get("smpl_pos_map", "smpl_pos_map")
-        self.smpl_model = smplx.SMPLX(model_path = config.PROJ_DIR + '/smpl_files/smplx', gender = 'female', use_pca = True, num_pca_comps = 12, flat_hand_mean = True, batch_size = 1)
+        if layers is None:
+            self.smpl_pos_map = config.opt.get("smpl_pos_map", "smpl_pos_map")
+        else:
+            self.smpl_pos_map = {}
+            for layer in layers:
+                self.smpl_pos_map[layer] = config.opt.get("smpl_pos_map", "smpl_pos_map") + f"_{layer}"
+        self.smpl_model, self.smpl_model_fit = smplx_model(self.data_dir)
 
         pose_list = list(range(self.smpl_data['body_pose'].shape[0]))
         if frame_range is not None:
@@ -119,7 +134,7 @@ class MvRgbDatasetBase(Dataset):
 
         # SMPL
         with torch.no_grad():
-            live_smpl = self.smpl_model.forward(
+            live_smpl = self.smpl_model_fit.forward(
                 betas = self.smpl_data['betas'][0][None],
                 global_orient = self.smpl_data['global_orient'][pose_idx][None],
                 transl = self.smpl_data['transl'][pose_idx][None],
@@ -137,7 +152,7 @@ class MvRgbDatasetBase(Dataset):
                 jaw_pose = self.smpl_data['jaw_pose'][pose_idx][None],
                 expression = self.smpl_data['expression'][pose_idx][None],
             )
-            live_smpl_woRoot = self.smpl_model.forward(
+            live_smpl_woRoot = self.smpl_model_fit.forward(
                 betas = self.smpl_data['betas'][0][None],
                 body_pose = self.smpl_data['body_pose'][pose_idx][None],
                 jaw_pose = self.smpl_data['jaw_pose'][pose_idx][None],
@@ -148,11 +163,22 @@ class MvRgbDatasetBase(Dataset):
 
         data_item = dict()
         if self.load_smpl_pos_map:
-            smpl_pos_map = cv.imread(self.data_dir + '/{}/%08d.exr'.format(self.smpl_pos_map) % pose_idx, cv.IMREAD_UNCHANGED)
-            pos_map_size = smpl_pos_map.shape[1] // 2
-            smpl_pos_map = np.concatenate([smpl_pos_map[:, :pos_map_size], smpl_pos_map[:, pos_map_size:]], 2)
-            smpl_pos_map = smpl_pos_map.transpose((2, 0, 1))
-            data_item['smpl_pos_map'] = smpl_pos_map
+            if self.layers is None:
+                smpl_pos_map = process_pos_map(self.data_dir + '/{}/%08d.exr'.format(self.smpl_pos_map) % pose_idx)
+                data_item['smpl_pos_map'] = smpl_pos_map
+            else:
+                smpl_pos_maps = {}
+                smpl_cano_pos_maps = {}
+                for layer in self.layers:
+                    smpl_pos_map = process_pos_map(self.data_dir + '/{}/%08d.exr'.format(self.smpl_pos_map[layer]) % pose_idx)
+                    smpl_pos_maps[layer] = smpl_pos_map
+
+                    smpl_cano_pos_map = process_pos_map(self.data_dir + '/{}/cano_smpl_pos_map.exr'.format(self.smpl_pos_map[layer]))
+                    smpl_cano_pos_maps[layer] = smpl_cano_pos_map
+                data_item['smpl_cano_pos_map'] = smpl_cano_pos_maps
+                data_item['smpl_pos_map'] = smpl_pos_maps
+                
+
 
         if self.load_smpl_nml_map:
             smpl_nml_map = cv.imread(self.data_dir + '/smpl_nml_map/%08d.jpg' % pose_idx, cv.IMREAD_UNCHANGED)
@@ -200,6 +226,22 @@ class MvRgbDatasetBase(Dataset):
                     'mask_img': mask_img,
                     'boundary_mask_img': boundary_mask_img
                 })
+                if self.use_label:
+                    label_img = (self.load_image(pose_idx, view_idx, "labels_color") / 255.).astype(np.float32)
+                    data_item["label_img"] = label_img
+                if self.use_body_label:
+                    label_body_img = (self.load_image(pose_idx, view_idx, "body_masks") / 255.).astype(np.float32)
+                    data_item["label_body_img"] = label_body_img
+                if self.use_normal:
+                    normal_img = (self.load_image(pose_idx, view_idx, "normals") / 255.).astype(np.float32)
+                    data_item["normal_img"] = normal_img
+                joints_3d = live_smpl["joints"][:, [config.JOINT_MAPPER["head"]]]
+                extrinsic = self.extr_mats[view_idx]
+                intrinsic = self.intr_mats[view_idx]
+                projection_matrices = torch.tensor(intrinsic @ extrinsic[:3])
+                p = torch.einsum("ij,mnj->mni", projection_matrices[:3, :3], joints_3d) + projection_matrices[:3, 3]
+                p = p[..., :2] / p[..., 2:3]
+                data_item["head_pixel"] = p[0].squeeze(0)
             elif self.mode == 'nerf':
                 depth_img = np.zeros(color_img.shape[:2], np.float32)
                 nerf_random = nerf_util.sample_randomly_for_nerf_rendering(
@@ -254,8 +296,12 @@ class MvRgbDatasetBase(Dataset):
         Initialize:
         self.smpl_data, a dict including ['body_pose', 'global_orient', 'transl', 'betas', ...]
         """
-        smpl_data = np.load(self.data_dir + '/smpl_params.npz', allow_pickle = True)
-        smpl_data = dict(smpl_data)
+        smpl_data = np.load(self.data_dir + f'/{config.opt.get("sequence_name", "smpl_params")}.npz', allow_pickle = True)
+        smpl_data_raw = dict(smpl_data)
+        smpl_data = {}
+        for key in smpl_data_raw:
+            if smpl_data_raw[key].dtype == "float64" or smpl_data_raw[key].dtype == "float32":
+                smpl_data[key] = smpl_data_raw[key]
         self.smpl_data = {k: torch.from_numpy(v.astype(np.float32)) for k, v in smpl_data.items()}
 
     def filter_missing_files(self):
@@ -263,9 +309,14 @@ class MvRgbDatasetBase(Dataset):
 
     def load_color_mask_images(self, pose_idx, view_idx):
         raise NotImplementedError
+    
+    def load_image(self, pose_idx, view_idx, folder_name):
+        raise NotImplementedError
+    
 
+    
     @staticmethod
-    def get_boundary_mask(mask, kernel_size = 5):
+    def get_boundary_mask(mask, kernel_size = 3):
         """
         :param mask: np.uint8
         :param kernel_size:
@@ -324,8 +375,7 @@ class MvRgbDatasetBase(Dataset):
         new_pose_conds = new_pose_conds.reshape(-1, 3)
         return new_pose_conds
 
-
-class MvRgbDatasetTHuman4(MvRgbDatasetBase):
+class MvRgbDataset4DDress(MvRgbDatasetBase):
     def __init__(
         self,
         data_dir,
@@ -335,9 +385,13 @@ class MvRgbDatasetTHuman4(MvRgbDatasetBase):
         subject_name = None,
         load_smpl_pos_map = False,
         load_smpl_nml_map = False,
-        mode = '3dgs'
+        mode = '3dgs',
+        layers = None,
+        use_label = False,
+        use_body_label = False,
+        use_normal = False,
     ):
-        super(MvRgbDatasetTHuman4, self).__init__(
+        super(MvRgbDataset4DDress, self).__init__(
             data_dir,
             frame_range,
             used_cam_ids,
@@ -345,103 +399,92 @@ class MvRgbDatasetTHuman4(MvRgbDatasetBase):
             subject_name,
             load_smpl_pos_map,
             load_smpl_nml_map,
-            mode
+            mode,
+            layers,
+            use_label,
+            use_body_label,
+            use_normal,
         )
+        if subject_name is None:
+            self.subject_name = os.path.basename(os.path.dirname(self.data_dir))
+        if layers is not None:
+            self.surface_label = ['lower']
+            self.surface_label_color = RGB2GRAY([[128, 0, 255]])
+            self.masklabel = dict(zip(self.surface_label, self.surface_label_color))
+
 
     def load_cam_data(self):
-        import json
-        cam_data = json.load(open(self.data_dir + '/calibration.json', 'r'))
-        self.view_num = len(cam_data)
-        self.extr_mats = []
-        self.cam_names = ['cam%02d' % view_idx for view_idx in range(self.view_num)]
-        for view_idx in range(self.view_num):
-            extr_mat = np.identity(4, np.float32)
-            extr_mat[:3, :3] = np.array(cam_data['cam%02d' % view_idx]['R'], np.float32).reshape(3, 3)
-            extr_mat[:3, 3] = np.array(cam_data['cam%02d' % view_idx]['T'], np.float32)
-            self.extr_mats.append(extr_mat)
-        self.intr_mats = [np.array(cam_data['cam%02d' % view_idx]['K'], np.float32).reshape(3, 3) for view_idx in range(self.view_num)]
-        self.img_heights = [cam_data['cam%02d' % view_idx]['imgSize'][1] for view_idx in range(self.view_num)]
-        self.img_widths = [cam_data['cam%02d' % view_idx]['imgSize'][0] for view_idx in range(self.view_num)]
+        import csv
+        cam_names = []
+        extr_mats = []
+        intr_mats = []
+        img_widths = []
+        img_heights = []
+        with open(os.path.join(self.data_dir, "cameras.pkl"), "rb") as fp:
+            cameras = pickle.load(fp)
+            for cam_name in cameras.keys():
+                cam_names.append(cam_name)
+                camera = cameras[cam_name]
+                img_widths.append(940)
+                img_heights.append(1280)
 
+                extr_mat = np.identity(4, np.float32)
+                extr_mat[:3, :] = camera["extrinsics"]
+                extr_mats.append(extr_mat)
+
+                intr_mat = np.identity(3, np.float32)
+                intr_mat[:, :] = camera["intrinsics"]
+                intr_mats.append(intr_mat)
+
+        self.cam_names, self.img_widths, self.img_heights, self.extr_mats, self.intr_mats \
+            = cam_names, img_widths, img_heights, extr_mats, intr_mats
+        self.view_num = len(self.cam_names)
+
+    def load_image(self, pose_idx, view_idx, folder_name):
+        cam_name = self.cam_names[view_idx]
+        img = cv.imread(os.path.join(self.data_dir, cam_name,
+                                           folder_name, '%05d.png' % pose_idx), cv.IMREAD_UNCHANGED)
+        return img
+    
     def filter_missing_files(self):
         missing_data_list = []
-        with open(self.data_dir + '/missing_img_files.txt', 'r') as fp:
-            lines = fp.readlines()
-        for line in lines:
-            line = line.replace('\\', '/')  # considering both Windows and Ubuntu file system
-            frame_idx = int(os.path.basename(line).replace('.jpg', ''))
-            view_idx = int(os.path.basename(os.path.dirname(line)).replace('cam', ''))
-            missing_data_list.append((frame_idx, view_idx))
-        for missing_data_idx in missing_data_list:
-            if missing_data_idx in self.data_list:
-                self.data_list.remove(missing_data_idx)
-
-    def load_color_mask_images(self, pose_idx, view_idx):
-        color_img = cv.imread(self.data_dir + '/images/cam%02d/%08d.jpg' % (view_idx, pose_idx), cv.IMREAD_UNCHANGED)
-        mask_img = cv.imread(self.data_dir + '/masks/cam%02d/%08d.jpg' % (view_idx, pose_idx), cv.IMREAD_UNCHANGED)
-        return color_img, mask_img
-
-
-class MvRgbDatasetAvatarReX(MvRgbDatasetBase):
-    def __init__(
-        self,
-        data_dir,
-        frame_range = None,
-        used_cam_ids = None,
-        training = True,
-        subject_name = None,
-        load_smpl_pos_map = False,
-        load_smpl_nml_map = False,
-        mode = '3dgs'
-    ):
-        super(MvRgbDatasetAvatarReX, self).__init__(
-            data_dir,
-            frame_range,
-            used_cam_ids,
-            training,
-            subject_name,
-            load_smpl_pos_map,
-            load_smpl_nml_map,
-            mode
-        )
-
-    def load_cam_data(self):
-        import json
-        cam_data = json.load(open(self.data_dir + '/calibration_full.json', 'r'))
-        self.cam_names = list(cam_data.keys())
-        self.view_num = len(self.cam_names)
-        self.extr_mats = []
-        for view_idx in range(self.view_num):
-            extr_mat = np.identity(4, np.float32)
-            extr_mat[:3, :3] = np.array(cam_data[self.cam_names[view_idx]]['R'], np.float32).reshape(3, 3)
-            extr_mat[:3, 3] = np.array(cam_data[self.cam_names[view_idx]]['T'], np.float32)
-            self.extr_mats.append(extr_mat)
-        self.intr_mats = [np.array(cam_data[self.cam_names[view_idx]]['K'], np.float32).reshape(3, 3) for view_idx in range(self.view_num)]
-        self.img_heights = [cam_data[self.cam_names[view_idx]]['imgSize'][1] for view_idx in range(self.view_num)]
-        self.img_widths = [cam_data[self.cam_names[view_idx]]['imgSize'][0] for view_idx in range(self.view_num)]
-
-    def filter_missing_files(self):
-        if os.path.exists(self.data_dir + '/missing_img_files.txt'):
-            missing_data_list = []
+        if os.path.exists((self.data_dir + '/missing_img_files.txt')):
             with open(self.data_dir + '/missing_img_files.txt', 'r') as fp:
                 lines = fp.readlines()
             for line in lines:
                 line = line.replace('\\', '/')  # considering both Windows and Ubuntu file system
                 frame_idx = int(os.path.basename(line).replace('.jpg', ''))
-                view_idx = self.cam_names.index(os.path.basename(os.path.dirname(line)))
-                missing_data_list.append((frame_idx, view_idx))
+                for camera in self.used_cam_ids:
+                    missing_data_list.append((frame_idx, camera))
             for missing_data_idx in missing_data_list:
                 if missing_data_idx in self.data_list:
                     self.data_list.remove(missing_data_idx)
 
+    
     def load_color_mask_images(self, pose_idx, view_idx):
         cam_name = self.cam_names[view_idx]
-        color_img = cv.imread(self.data_dir + '/%s/%08d.jpg' % (cam_name, pose_idx), cv.IMREAD_UNCHANGED)
-        mask_img = cv.imread(self.data_dir + '/%s/mask/pha/%08d.jpg' % (cam_name, pose_idx), cv.IMREAD_UNCHANGED)
+        color_img = cv.imread(os.path.join(self.data_dir, cam_name,
+                                           "images", '%05d.png' % pose_idx), cv.IMREAD_UNCHANGED)
+        # label_img = cv.imread(os.path.join(self.data_dir, cam_name,
+        #                                    "labels", '%05d.png' % pose_idx), cv.IMREAD_UNCHANGED)
+        mask_img = cv.imread(os.path.join(self.data_dir, cam_name, "masks", '%05d.png' % pose_idx), cv.IMREAD_UNCHANGED)
+        if len(mask_img.shape) > 2:
+            mask_img = mask_img[:, :, 0]
+        # color_img = np.concatenate([color_img, np.expand_dims(label_img, axis=2)], axis=2)
+        # Use partial image
+        # if self.layers is None:
+        #     mask_img = cv.imread(os.path.join(self.data_dir, cam_name,
+        #                                     "masks", '%05d.png' % pose_idx), cv.IMREAD_UNCHANGED)
+        # else:
+        #     selected_gray = []
+        #     label_img = cv.imread(os.path.join(self.data_dir, cam_name,
+        #                                     "labels", '%05d.png' % pose_idx), cv.IMREAD_GRAYSCALE)
+        #     for layer in self.layers:
+        #         selected_gray.append(self.masklabel[layer])
+        #     mask_img = np.isin(label_img, selected_gray).astype(np.uint8) * 255
         return color_img, mask_img
 
-
-class MvRgbDatasetActorsHQ(MvRgbDatasetBase):
+class MvRgbDatasetOther(MvRgbDatasetBase):
     def __init__(
         self,
         data_dir,
@@ -451,9 +494,9 @@ class MvRgbDatasetActorsHQ(MvRgbDatasetBase):
         subject_name = None,
         load_smpl_pos_map = False,
         load_smpl_nml_map = False,
-        mode = '3dgs'
+        mode = '3dgs',
     ):
-        super(MvRgbDatasetActorsHQ, self).__init__(
+        super(MvRgbDatasetOther, self).__init__(
             data_dir,
             frame_range,
             used_cam_ids,
@@ -461,9 +504,8 @@ class MvRgbDatasetActorsHQ(MvRgbDatasetBase):
             subject_name,
             load_smpl_pos_map,
             load_smpl_nml_map,
-            mode
+            mode,
         )
-
         if subject_name is None:
             self.subject_name = os.path.basename(os.path.dirname(self.data_dir))
 
@@ -474,7 +516,92 @@ class MvRgbDatasetActorsHQ(MvRgbDatasetBase):
         intr_mats = []
         img_widths = []
         img_heights = []
-        with open(self.data_dir + '/4x/calibration.csv', "r", newline = "", encoding = 'utf-8') as fp:
+        cameras = glob.glob( os.path.join(self.data_dir,  "cameras", '*.json'),
+            recursive=True)
+        for camera_fn in cameras:
+            with open(camera_fn) as fp:
+                camera = json.load(fp)
+                cam_names.append(camera_fn.split("/")[-1].split(".")[0])
+                img_widths.append(1024)
+                img_heights.append(1024)
+
+                extr_mat = inv(camera["cam_param"])
+                extr_mats.append(extr_mat)
+                intr_mat = np.identity(3, np.float32)
+                intr_mat[0, 0] = 100000
+                intr_mat[1, 1] = 100000
+                intr_mat[0, 2] = 512
+                intr_mat[1, 2] = 512
+                intr_mats.append(intr_mat)
+
+        self.cam_names, self.img_widths, self.img_heights, self.extr_mats, self.intr_mats \
+            = cam_names, img_widths, img_heights, extr_mats, intr_mats
+        self.view_num = len(self.cam_names)
+
+    def load_color_mask_images(self, pose_idx, view_idx):
+        cam_name = self.cam_names[view_idx]
+        color_img = cv.imread(os.path.join(self.data_dir, cam_name, '%05d.png' % (pose_idx + 1)), cv.IMREAD_UNCHANGED)[:,:,:3]
+        # label_img = cv.imread(os.path.join(self.data_dir, cam_name,
+        #                                    "labels", '%05d.png' % pose_idx), cv.IMREAD_UNCHANGED)
+        mask_img = np.load(os.path.join(self.data_dir, cam_name, '%05d.npy' % (pose_idx + 1))).astype(np.float64) * 255
+        if len(mask_img.shape) > 2:
+            mask_img = mask_img[:, :, 0]
+        # color_img = np.concatenate([color_img, np.expand_dims(label_img, axis=2)], axis=2)
+        # Use partial image
+        # if self.layers is None:
+        #     mask_img = cv.imread(os.path.join(self.data_dir, cam_name,
+        #                                     "masks", '%05d.png' % pose_idx), cv.IMREAD_UNCHANGED)
+        # else:
+        #     selected_gray = []
+        #     label_img = cv.imread(os.path.join(self.data_dir, cam_name,
+        #                                     "labels", '%05d.png' % pose_idx), cv.IMREAD_GRAYSCALE)
+        #     for layer in self.layers:
+        #         selected_gray.append(self.masklabel[layer])
+        #     mask_img = np.isin(label_img, selected_gray).astype(np.uint8) * 255
+        return color_img, mask_img
+    
+class MvRgbDatasetActorsHQ(MvRgbDatasetBase):
+    def __init__(
+        self,
+        data_dir,
+        frame_range = None,
+        used_cam_ids = None,
+        training = True,
+        subject_name = None,
+        load_smpl_pos_map = False,
+        load_smpl_nml_map = False,
+        mode = '3dgs',
+        layers = None,
+        use_label = False,
+        use_body_label = False,
+        use_normal = False,
+    ):
+        super(MvRgbDatasetActorsHQ, self).__init__(
+            data_dir,
+            frame_range,
+            used_cam_ids,
+            training,
+            subject_name,
+            load_smpl_pos_map,
+            load_smpl_nml_map,
+            mode,
+            layers,
+            use_label,
+            use_body_label,
+            use_normal,
+        )
+
+        if subject_name is None:
+            self.subject_name = os.path.basename(os.path.dirname(self.data_dir))
+
+    def load_cam_data(self):
+        import csv
+        cam_names = ["Cam000"]
+        extr_mats = [np.identity(4, np.float32)]
+        intr_mats = [np.identity(3, np.float32)]
+        img_widths = [0]
+        img_heights = [0]
+        with open(self.data_dir + '/calibration.csv', "r", newline = "", encoding = 'utf-8') as fp:
             reader = csv.DictReader(fp)
             for row in reader:
                 cam_names.append(row['name'])
@@ -498,134 +625,30 @@ class MvRgbDatasetActorsHQ(MvRgbDatasetBase):
             = cam_names, img_widths, img_heights, extr_mats, intr_mats
 
     def load_color_mask_images(self, pose_idx, view_idx):
-        cam_name = self.cam_names[view_idx]
-        color_img = cv.imread(self.data_dir + '/4x/rgbs/%s/%s_rgb%06d.jpg' % (cam_name, cam_name, pose_idx), cv.IMREAD_UNCHANGED)
-        mask_img = cv.imread(self.data_dir + '/4x/masks/%s/%s_mask%06d.png' % (cam_name, cam_name, pose_idx), cv.IMREAD_UNCHANGED)
+        cam_name = f"Cam{view_idx:03d}"
+        color_img = cv.imread(self.data_dir + '/rgbs/%s/%s_rgb%06d.jpg' % (cam_name, cam_name, pose_idx), cv.IMREAD_UNCHANGED)
+        mask_img = cv.imread(self.data_dir + '/masks/%s/%s_mask%06d.png' % (cam_name, cam_name, pose_idx), cv.IMREAD_UNCHANGED)
         return color_img, mask_img
-
-
-class MvRgbDatasetAvatarReX(MvRgbDatasetBase):
-    def __init__(
-        self,
-        data_dir,
-        frame_range = None,
-        used_cam_ids = None,
-        training = True,
-        subject_name = None,
-        load_smpl_pos_map = False,
-        load_smpl_nml_map = False,
-        mode = '3dgs'
-    ):
-        super(MvRgbDatasetAvatarReX, self).__init__(
-            data_dir,
-            frame_range,
-            used_cam_ids,
-            training,
-            subject_name,
-            load_smpl_pos_map,
-            load_smpl_nml_map,
-            mode
-        )
-
-    def load_cam_data(self):
-        import json
-        cam_data = json.load(open(self.data_dir + '/calibration_full.json', 'r'))
-        self.cam_names = list(cam_data.keys())
-        self.view_num = len(self.cam_names)
-        self.extr_mats = []
-        for view_idx in range(self.view_num):
-            extr_mat = np.identity(4, np.float32)
-            extr_mat[:3, :3] = np.array(cam_data[self.cam_names[view_idx]]['R'], np.float32).reshape(3, 3)
-            extr_mat[:3, 3] = np.array(cam_data[self.cam_names[view_idx]]['T'], np.float32)
-            self.extr_mats.append(extr_mat)
-        self.intr_mats = [np.array(cam_data[self.cam_names[view_idx]]['K'], np.float32).reshape(3, 3) for view_idx in range(self.view_num)]
-        self.img_heights = [cam_data[self.cam_names[view_idx]]['imgSize'][1] for view_idx in range(self.view_num)]
-        self.img_widths = [cam_data[self.cam_names[view_idx]]['imgSize'][0] for view_idx in range(self.view_num)]
-
+    
     def filter_missing_files(self):
-        if os.path.exists(self.data_dir + '/missing_img_files.txt'):
-            missing_data_list = []
-            with open(self.data_dir + '/missing_img_files.txt', 'r') as fp:
-                lines = fp.readlines()
-            for line in lines:
-                line = line.replace('\\', '/')  # considering both Windows and Ubuntu file system
-                frame_idx = int(os.path.basename(line).replace('.jpg', ''))
-                view_idx = self.cam_names.index(os.path.basename(os.path.dirname(line)))
-                missing_data_list.append((frame_idx, view_idx))
-            for missing_data_idx in missing_data_list:
-                if missing_data_idx in self.data_list:
-                    self.data_list.remove(missing_data_idx)
+        missing_data_list = []
+        with open(self.data_dir + '/missing_img_files.txt', 'r') as fp:
+            lines = fp.readlines()
+        for line in lines:
+            line = line.replace('\\', '/')  # considering both Windows and Ubuntu file system
+            frame_idx = int(os.path.basename(line).replace('.jpg', ''))
+            for camera in self.used_cam_ids:
+                missing_data_list.append((frame_idx, camera))
+        for missing_data_idx in missing_data_list:
+            if missing_data_idx in self.data_list:
+                self.data_list.remove(missing_data_idx)
 
-    def load_color_mask_images(self, pose_idx, view_idx):
-        cam_name = self.cam_names[view_idx]
-        color_img = cv.imread(self.data_dir + '/%s/%08d.jpg' % (cam_name, pose_idx), cv.IMREAD_UNCHANGED)
-        mask_img = cv.imread(self.data_dir + '/%s/mask/pha/%08d.jpg' % (cam_name, pose_idx), cv.IMREAD_UNCHANGED)
-        return color_img, mask_img
-
-
-class MvRgbDataset4DDress(MvRgbDatasetBase):
-    def __init__(
-        self,
-        data_dir,
-        frame_range = None,
-        used_cam_ids = None,
-        training = True,
-        subject_name = None,
-        load_smpl_pos_map = False,
-        load_smpl_nml_map = False,
-        mode = '3dgs'
-    ):
-        super(MvRgbDataset4DDress, self).__init__(
-            data_dir,
-            frame_range,
-            used_cam_ids,
-            training,
-            subject_name,
-            load_smpl_pos_map,
-            load_smpl_nml_map,
-            mode
-        )
-        if subject_name is None:
-            self.subject_name = os.path.basename(os.path.dirname(self.data_dir))
-    def load_cam_data(self):
-        import csv
-        cam_names = []
-        extr_mats = []
-        intr_mats = []
-        img_widths = []
-        img_heights = []
-        with open(os.path.join(self.data_dir, "cameras.pkl"), "rb") as fp:
-            cameras = pickle.load(fp)
-            for cam_name in cameras.keys():
-                cam_names.append(cam_name)
-                camera = cameras[cam_name]
-                img_widths.append(940)
-                img_heights.append(1280)
-
-                extr_mat = np.identity(4, np.float32)
-                extr_mat[:3, :] = camera["extrinsics"]
-                extr_mats.append(extr_mat)
-
-                intr_mats.append(camera["intrinsics"])
-
-        self.cam_names, self.img_widths, self.img_heights, self.extr_mats, self.intr_mats \
-            = cam_names, img_widths, img_heights, extr_mats, intr_mats
-        self.view_num = len(self.cam_names)
-
-    def load_color_mask_images(self, pose_idx, view_idx):
-        cam_name = self.cam_names[view_idx]
-        color_img = cv.imread(os.path.join(self.data_dir, cam_name,
-                                           "images", '%05d.png' % pose_idx), cv.IMREAD_UNCHANGED)
-        if color_img is None:
-            from gen_data.preprocess_4ddress import read_all_png_camera, copy_png_to_folder
-            data_dir = "/home/zhiychen/Desktop/snarf/data/4d_dress/"
-            new_data_dir = "/home/zhiychen/Desktop/train_data/multiviewRGC/4d_dress/"
-            takes = [i for i in range(11, 18)]
-            image_list = read_all_png_camera(data_dir, camera=int(cam_name), takes=takes)
-            copy_png_to_folder(new_data_dir, image_list, camera=int(cam_name))
-            color_img = cv.imread(os.path.join(self.data_dir, cam_name,
-                                               "images", '%05d.png' % pose_idx), cv.IMREAD_UNCHANGED)
-
-        mask_img = cv.imread(os.path.join(self.data_dir, cam_name,
-                                           "masks", '%05d.png' % pose_idx), cv.IMREAD_UNCHANGED)
-        return color_img, mask_img
+    def load_image(self, pose_idx, view_idx, folder_name):
+        cam_name = f"Cam{view_idx:03d}"
+        if folder_name == "labels_color":
+            img = cv.imread(os.path.join(self.data_dir, '%s/%s/label-f%06d.png' % (folder_name, cam_name, pose_idx)), cv.IMREAD_UNCHANGED)
+        elif folder_name == "normals":
+            img = cv.imread(os.path.join(self.data_dir, '%s/%s/%s_rgb%06d.png' % (folder_name, cam_name, cam_name, pose_idx)), cv.IMREAD_UNCHANGED)
+        else:
+            img = cv.imread(os.path.join(self.data_dir, '%s/%s/%05d.png' % (folder_name, cam_name, pose_idx)), cv.IMREAD_UNCHANGED)
+        return img

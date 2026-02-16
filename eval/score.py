@@ -12,10 +12,14 @@ class Metrics:
         self.ssim = 0.
         self.lpips = 0.
         self.count = 0
+        self.iou = 0
+        self.precision = 0
+        self.recall = 0
+        self.f1 = 0
 
     def __repr__(self):
         if self.count > 0:
-            return f'Count: {self.count}, PSNR: {self.psnr / self.count}, SSIM: {self.ssim / self.count}, LPIPS: {self.lpips / self.count}'
+            return f'Count: {self.count}, PSNR: {self.psnr / self.count}, SSIM: {self.ssim / self.count}, LPIPS: {self.lpips / self.count}, IOU: {self.iou / self.count}, Precision: {self.precision / self.count}, Recall: {self.recall / self.count}, f1: {self.f1 / self.count}'
         else:
             return 'count is 0!'
 
@@ -104,5 +108,74 @@ def compute_psnr(src, tar):
 
 
 def compute_ssim(src, tar):
-    ssim = skimage.metrics.structural_similarity(src, tar, multichannel = True, channel_axis=2, data_range = 1)
+    ssim = skimage.metrics.structural_similarity(src, tar, multichannel = True, channel_axis=2,data_range = 1, win_size=11)
     return ssim
+
+def compute_iou(pred, gt, classes = [1,2]):
+    pred = pred.reshape(-1, )
+    gt = gt.reshape(-1, )
+
+    pred_tmp = pred
+    gt_tmp = gt
+
+    intersect = [0] * (max(classes) + 1)
+    union = [0] * (max(classes) + 1)
+    for j in classes:
+        match = torch.tensor((pred_tmp == j).astype(np.int32) + (gt_tmp == j).astype(np.int32))
+
+        it = torch.sum(match == 2).item()
+        un = torch.sum(match > 0).item()
+
+        intersect[j] += it
+        union[j] += un
+
+    iou = []
+    for k in classes:
+        if union[k] == 0:
+            continue
+        iou.append(intersect[k] / union[k])
+
+    img_iou = (sum(iou) / len(iou))
+
+    return img_iou
+
+def compute_precision(pred, gt, classes = [1,2]):
+    pred = pred.reshape(-1, )
+    gt = gt.reshape(-1, )
+
+    pred_tmp = pred
+    gt_tmp = gt
+
+    correct = [0] * (max(classes) + 1)
+    total = [0] * (max(classes) + 1)
+    for j in classes:
+        cur_correct = torch.tensor((pred_tmp == j)& (pred_tmp == gt_tmp))
+        cur_total = torch.tensor(pred_tmp == j)
+
+        correct[j] += torch.sum(cur_correct).item()
+        total[j] += torch.sum(cur_total).item()
+
+
+    return sum(correct)/ sum(total)
+
+def compute_recall(pred, gt, classes = [1,2]):
+    pred = pred.reshape(-1, )
+    gt = gt.reshape(-1, )
+
+    pred_tmp = pred
+    gt_tmp = gt
+
+    correct = [0] * (max(classes) + 1)
+    total = [0] * (max(classes) + 1)
+    for j in classes:
+        cur_correct = torch.tensor((pred_tmp == j)& (pred_tmp == gt_tmp))
+        cur_total = torch.tensor(gt_tmp == j)
+
+        correct[j] += torch.sum(cur_correct).item()
+        total[j] += torch.sum(cur_total).item()
+
+
+    return sum(correct)/ sum(total)
+
+def compute_f1(precision, recall):
+    return 2*precision*recall/(precision+recall)

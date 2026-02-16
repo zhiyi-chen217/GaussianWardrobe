@@ -1,48 +1,62 @@
 # Data Organization
-We recommend follow [THuman4.0](https://github.com/ZhengZerong/THUman4.0-Dataset) dataset to organize your own data as shown below:
+The structure of the training dataset we used is the following
 ```
 data_dir
+├── body_masks
+|   └── 0004
+│   └── 0016
 ├── images
-|   └── cam00
-│   └── cam01
+|   └── 0004
+│   └── 0016
+├── labels
+|   └── 0004
+│   └── 0016
 ├── masks
-│   └── cam00
-│   └── cam01
-├── calibration.json
+│   └── 0004
+│   └── 0016
+├── cameras.pkl
 ├── smpl_params.npz
 ```
 
 
 # Preprocessing
 
-1. (Optional) Reconstruct a template if the character is wearing loose clothes.
-* Install additional libs.
-```
-cd ./utils/posevocab_custom_ops
-python setup.py install
-cd ../..
+0. Reconstruct a template of the cloth using the label images.
+- save it as ``template_body.py``
 
-cd ./utils/root_finding
-python setup.py install
-cd ../..
-```
-* Generate a canonical LBS weight volume. 
-    * **For Windows**: Download [AdaptiveSolvers.x64.zip](https://www.cs.jhu.edu/~misha/Code/PoissonRecon/Version16.01/AdaptiveSolvers.x64.zip) and extract ```PointInterpolant.exe``` to ```./bins```
-    * **For Linux**:
-        * Clone [Adaptive Multigrid Solvers (Version 16.04)](https://github.com/mkazhdan/PoissonRecon.git) to directory of your choice 
-        * ```cd path/to/cloned/repo```
-        * ```make pointinterpolant```
-        * The resulting executable file is at ```path/to/cloned/repo/Bin/Linux/PointInterpolant```. Copy it to ```./bins``` (you may need to do ```mkdir ./bins``` beforehand)
-        * Go to ```./gen_data/gen_weight_volume.py line 115```, change ```solve(smpl_model.lbs_weights.shape[-1], ".\\bins\\PointInterpolant.exe")``` to ```solve(smpl_model.lbs_weights.shape[-1], "./bins/PointInterpolant")```. (This is the resulting executable file we previously made.)
-```
-python -m gen_data.gen_weight_volume -c configs/***/template.yaml
-```
-* Run the following script to reconstruct a template.
-```
-python main_template.py -c configs/***/template.yaml
-```
+1. Reconstruct a template of the body using the smpl parameters.
+- save it as ``template_cloth.py``
 
-2. Generate position maps.
-```
-python -m gen_data.gen_pos_maps -c configs/***/avatar.yaml
-```
+2. Given the pose and body shape from ``smpl_params.npz``, generate ``template_body_offset.py`` and ``template_cloth_offset.py``, which stores the body and cloth meshes in canonical shape-zero space. The side product ``template_body_offset.pkl`` and ``template_cloth_offset.pkl`` stores the shape offset information
+
+3. Generate original beta-shaped and shape-zero weight volume:
+    1. For shape-zero: ```gen_data/gen_weight_volume.py -c configs/4d_dress/template.yaml -z```
+    2. For original-shape: ```gen_data/gen_weight_volume.py -c configs/4d_dress/template.yaml```
+
+4. Generate position map for both body and cloth using:
+    1.  ```gen_data/gen_pos_maps.py -c configs/4d_dress/avatar.yaml -rc -ro -o smpl_pos_map_offset_body -t template_body_offset -lw cano_weight_volume_shape_zero```
+    2.  ```gen_data/gen_pos_maps.py -c configs/4d_dress/avatar.yaml -rc -ro -o smpl_pos_map_offset_cloth -t template_cloth_offset -lw cano_weight_volume_shape_zero```
+
+The structure of the testing dataset we used is similar as the training data:
+
+# Preprocessing
+
+0. Reuse the following files from training dataset for the same subject
+    - cameras.pkl
+    - cano_weight_volume_shape_zero.npz
+    - cano_weight_volume.npz
+    - template_body_offset.py
+    - template_cloth_offset.py
+    - template_body_offset.pkl 
+    - template_cloth_offset.pkl
+
+1. Prepare the test pose sequence and save as ``smpl_params.npz``
+
+2. Generate position map for both body and cloth using:
+    0.  ```gen_data/gen_pos_maps.py -c configs/4d_dress/avatar.yaml -rc -ro -o smpl_pos_map_offset_body -t template_body_offset -lw cano_weight_volume_shape_zero```
+    1.  ```gen_data/gen_pos_maps.py -c configs/4d_dress/avatar.yaml -rc -ro -o smpl_pos_map_offset_cloth -t template_cloth_offset -lw cano_weight_volume_shape_zero```
+
+
+    
+
+

@@ -1090,14 +1090,14 @@ class AvatarTrainer:
         self.dataset = testing_dataset_body
         dataset_name = 'training'
         seq_name = config.opt.get("sequence_name", "smpl_params")
-        upper_avatar_net = MultiLAvatarNet(self.opt['model'],
-                                    self.opt['exchange_cloth']['data_upper'].get('layers', None), data_dir=self.opt['exchange_cloth']['data_upper']["data_dir"]).to(config.device)
+        upper_avatar_net = MultiLAvatarNet(self.opt['upper_model'],
+                                    self.opt['exchange_cloth']['data_upper'].get('layers', None), data_dir=self.opt['exchange_cloth']['data_upper']["data_dir"], model_config=self.opt['upper_model']).to(config.device)
         _, iter_idx = self.load_ckpt_net(self.opt['exchange_cloth']['upper_ckpt'], upper_avatar_net, False)
-        lower_avatar_net = MultiLAvatarNet(self.opt['model'],
-                        self.opt['exchange_cloth']['data_lower'].get('layers', None), data_dir=self.opt['exchange_cloth']['data_lower']["data_dir"]).to(config.device)
+        lower_avatar_net = MultiLAvatarNet(self.opt['lower_model'],
+                        self.opt['exchange_cloth']['data_lower'].get('layers', None), data_dir=self.opt['exchange_cloth']['data_lower']["data_dir"], model_config=self.opt['lower_model']).to(config.device)
         self.load_ckpt_net(self.opt['exchange_cloth']['lower_ckpt'], lower_avatar_net, False)
-        body_avatar_net = MultiLAvatarNet(self.opt['model'],
-                                    self.opt['exchange_cloth']['data_body'].get('layers', None), data_dir=self.opt['exchange_cloth']['data_body']["data_dir"]).to(config.device)
+        body_avatar_net = MultiLAvatarNet(self.opt['body_model'],
+                                    self.opt['exchange_cloth']['data_body'].get('layers', None), data_dir=self.opt['exchange_cloth']['data_body']["data_dir"], model_config=self.opt['body_model']).to(config.device)
         self.load_ckpt_net(self.opt['exchange_cloth']['body_ckpt'], body_avatar_net, False)
         combined_avatar_net = CombinedAvatarNet(self.opt['exchange_cloth'], body_avatar_net, upper_avatar_net, lower_avatar_net)
 

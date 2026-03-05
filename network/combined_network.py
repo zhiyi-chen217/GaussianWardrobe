@@ -25,7 +25,7 @@ class CombinedAvatarNet(nn.Module):
         self.lower_layer = lower_net
 
         self.layers = ["body", "cloth"]
-        self.data_dir = opt["data_dir"]
+        self.data_dir = opt["data"]["data_dir"]
         # lower mask
         # _, self.cloth_cloth_mask = read_map_mask(self.data_dir + '/cloth_cloth.exr')
         # upper mask

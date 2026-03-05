@@ -18,7 +18,7 @@ from utils.net_util import read_map_mask
 from utils.general_utils import render_gaussian
 from network.weight_lbs import LBSOffsetDecoder
 class AvatarNet(nn.Module):
-    def __init__(self, opt, layer=None, data_dir=None):
+    def __init__(self, opt, layer=None, data_dir=None, model_config=None):
         super(AvatarNet, self).__init__()
         self.opt = opt
         self.layer = layer
@@ -50,8 +50,14 @@ class AvatarNet(nn.Module):
         if layer == "cloth":
             _, self.cloth_segment_mask = read_map_mask(self.data_dir + '/{}/cano_smpl_segment_map.exr'
                                      .format(self.smpl_pos_map))
-            if config.opt["model"]["virtual_bone"]:
+            if model_config is None and config.opt["model"]["virtual_bone"]:
                 self.deformation_graph = DeformationGraph(config.opt["model"]["deformation_graph_network"])
+                n_virtual_bones = self.deformation_graph.deformation_graph_verts.shape[1]
+                self.weight_lbs = LBSOffsetDecoder(total_bones=(55 + n_virtual_bones))
+                _, upper_mask = read_map_mask(self.data_dir + f'/{self.smpl_pos_map}/cano_smpl_segment_map.exr')
+                self.loose_mask = upper_mask[self.cano_smpl_mask]
+            elif model_config is not None and model_config["virtual_bone"]:
+                self.deformation_graph = DeformationGraph(model_config["deformation_graph_network"])
                 n_virtual_bones = self.deformation_graph.deformation_graph_verts.shape[1]
                 self.weight_lbs = LBSOffsetDecoder(total_bones=(55 + n_virtual_bones))
                 _, upper_mask = read_map_mask(self.data_dir + f'/{self.smpl_pos_map}/cano_smpl_segment_map.exr')

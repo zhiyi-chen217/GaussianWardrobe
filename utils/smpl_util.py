@@ -2,7 +2,6 @@ import torch
 import pytorch3d.ops
 
 import smplx
-import smplxd as smplx
 from utils.posevocab_custom_ops.nearest_face import nearest_face_pytorch3d, nearest_face
 from utils.knn import knn_gather
 import config

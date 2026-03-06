@@ -58,6 +58,7 @@ class ImplicitNetwork(torch.nn.Module):
         self.predict = predict
         self.d_out = d_out
         self.tanh = torch.nn.Tanh()
+        self.sigmoid = torch.nn.Sigmoid()
     def forward(self, input, cond=None, mask=None):
         """MPL query.
 
@@ -114,7 +115,8 @@ class ImplicitNetwork(torch.nn.Module):
             if l < self.num_layers - 2:
                 x = self.softplus(x)
             elif self.predict == "deformation":
-                x[:3] = self.tanh(x[:3])
+                # x[:3] = self.tanh(x[:3])
+                x[:3] = 2 * self.sigmoid(x[:3]) - 1
 
         # add placeholder for masked prediction
         if mask is not None:

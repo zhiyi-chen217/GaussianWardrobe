@@ -54,14 +54,14 @@ class AvatarNet(nn.Module):
                 self.deformation_graph = DeformationGraph(config.opt["model"]["deformation_graph_network"])
                 n_virtual_bones = self.deformation_graph.deformation_graph_verts.shape[1]
                 self.weight_lbs = LBSOffsetDecoder(total_bones=(55 + n_virtual_bones))
-                _, upper_mask = read_map_mask(self.data_dir + f'/{self.smpl_pos_map}/cano_smpl_segment_map.exr')
-                self.loose_mask = upper_mask[self.cano_smpl_mask]
+                # _, upper_mask = read_map_mask(self.data_dir + f'/{self.smpl_pos_map}/cano_smpl_segment_map.exr')
+                # self.loose_mask = upper_mask[self.cano_smpl_mask]
             elif model_config is not None and model_config["virtual_bone"]:
                 self.deformation_graph = DeformationGraph(model_config["deformation_graph_network"])
                 n_virtual_bones = self.deformation_graph.deformation_graph_verts.shape[1]
                 self.weight_lbs = LBSOffsetDecoder(total_bones=(55 + n_virtual_bones))
-                _, upper_mask = read_map_mask(self.data_dir + f'/{self.smpl_pos_map}/cano_smpl_segment_map.exr')
-                self.loose_mask = upper_mask[self.cano_smpl_mask]
+                # _, upper_mask = read_map_mask(self.data_dir + f'/{self.smpl_pos_map}/cano_smpl_segment_map.exr')
+                # self.loose_mask = upper_mask[self.cano_smpl_mask]
         
         if layer =="body":
             _, self.smpl_body_mask = read_map_mask(self.data_dir + '/{}/cano_smpl_smplx_fix_offset_map.exr'.format(self.smpl_pos_map))
@@ -162,17 +162,24 @@ class AvatarNet(nn.Module):
             gaussian_vals['rotations'] = pytorch3d.transforms.matrix_to_quaternion(rot_mats)
         else:
             virtual_bone_trans = self.get_virtual_joints_deformation(items)
-            loose_pt_mats = torch.einsum('nj,jxy->nxy', self.get_weight_lbs(), torch.concat([items['cano2live_jnt_mats'], virtual_bone_trans]))[self.loose_mask,:,:]
-            gaussian_vals['positions'][self.loose_mask] = torch.einsum('nxy,ny->nx', loose_pt_mats[..., :3, :3], gaussian_vals['positions'][self.loose_mask]) + loose_pt_mats[..., :3, 3]
-            loose_rot_mats = pytorch3d.transforms.quaternion_to_matrix(gaussian_vals['rotations'][self.loose_mask])
+            loose_pt_mats = torch.einsum('nj,jxy->nxy', self.get_weight_lbs(), torch.concat([items['cano2live_jnt_mats'], virtual_bone_trans]))
+            gaussian_vals['positions'] = torch.einsum('nxy,ny->nx', loose_pt_mats[..., :3, :3], gaussian_vals['positions']) + loose_pt_mats[..., :3, 3]
+            loose_rot_mats = pytorch3d.transforms.quaternion_to_matrix(gaussian_vals['rotations'])
             loose_rot_mats = torch.einsum('nxy,nyz->nxz', loose_pt_mats[..., :3, :3], loose_rot_mats)
-            gaussian_vals['rotations'][self.loose_mask] = pytorch3d.transforms.matrix_to_quaternion(loose_rot_mats)
+            gaussian_vals['rotations'] = pytorch3d.transforms.matrix_to_quaternion(loose_rot_mats)
 
-            tight_pt_mats = torch.einsum('nj,jxy->nxy', self.lbs, items['cano2live_jnt_mats'])[~self.loose_mask,:,:]
-            gaussian_vals['positions'][~self.loose_mask] = torch.einsum('nxy,ny->nx', tight_pt_mats[..., :3, :3], gaussian_vals['positions'][~self.loose_mask]) + tight_pt_mats[..., :3, 3]
-            tight_rot_mats = pytorch3d.transforms.quaternion_to_matrix(gaussian_vals['rotations'][~self.loose_mask])
-            tight_rot_mats = torch.einsum('nxy,nyz->nxz', tight_pt_mats[..., :3, :3], tight_rot_mats)
-            gaussian_vals['rotations'][~self.loose_mask] = pytorch3d.transforms.matrix_to_quaternion(tight_rot_mats)
+            # virtual_bone_trans = self.get_virtual_joints_deformation(items)
+            # loose_pt_mats = torch.einsum('nj,jxy->nxy', self.get_weight_lbs(), torch.concat([items['cano2live_jnt_mats'], virtual_bone_trans]))[self.loose_mask,:,:]
+            # gaussian_vals['positions'][self.loose_mask] = torch.einsum('nxy,ny->nx', loose_pt_mats[..., :3, :3], gaussian_vals['positions'][self.loose_mask]) + loose_pt_mats[..., :3, 3]
+            # loose_rot_mats = pytorch3d.transforms.quaternion_to_matrix(gaussian_vals['rotations'][self.loose_mask])
+            # loose_rot_mats = torch.einsum('nxy,nyz->nxz', loose_pt_mats[..., :3, :3], loose_rot_mats)
+            # gaussian_vals['rotations'][self.loose_mask] = pytorch3d.transforms.matrix_to_quaternion(loose_rot_mats)
+
+            # tight_pt_mats = torch.einsum('nj,jxy->nxy', self.lbs, items['cano2live_jnt_mats'])[~self.loose_mask,:,:]
+            # gaussian_vals['positions'][~self.loose_mask] = torch.einsum('nxy,ny->nx', tight_pt_mats[..., :3, :3], gaussian_vals['positions'][~self.loose_mask]) + tight_pt_mats[..., :3, 3]
+            # tight_rot_mats = pytorch3d.transforms.quaternion_to_matrix(gaussian_vals['rotations'][~self.loose_mask])
+            # tight_rot_mats = torch.einsum('nxy,nyz->nxz', tight_pt_mats[..., :3, :3], tight_rot_mats)
+            # gaussian_vals['rotations'][~self.loose_mask] = pytorch3d.transforms.matrix_to_quaternion(tight_rot_mats)
         return gaussian_vals
 
     def get_positions(self, pose_map, return_map = False, with_offset=False, position_only=False):

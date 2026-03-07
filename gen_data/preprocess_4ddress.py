@@ -11,7 +11,7 @@ import trimesh
 from pytorch3d.renderer import PerspectiveCameras, RasterizationSettings, MeshRasterizer
 import json
 from pytorch3d.structures import Meshes
-sys.path.append("/local/home/zhiychen/AnimatableGaussain")
+# sys.path.append("/local/home/zhiychen/AnimatableGaussain")
 from utils.sh_utils import RGB2GRAY
 from tqdm import tqdm
 import re
@@ -78,7 +78,7 @@ def read_all_png_camera(data_dir, png_type="images", png_prefix=""):
 def read_all_pose(data_dir):
     pose_list = []
     for take in TAKES:
-        pose_list += glob.glob(
+        pose_list += glob.glob( 
             os.path.join(data_dir, '%05d' % SUBJECT, LAYER, f'Take{take}', "SMPLX", '*.pkl'),
             recursive=True)
     pose_list.sort()
@@ -233,17 +233,17 @@ if __name__ == '__main__':
     from argparse import ArgumentParser
     arg_parser = ArgumentParser()
     arg_parser.add_argument('-c', '--camera', type=int, default="28", help = 'camera_name')
-    arg_parser.add_argument('-s', '--subject', type=str, default="00187", help='Configuration output path.')
+    arg_parser.add_argument('-s', '--subject', type=str, default="00140", help='Configuration output path.')
     arg_parser.add_argument('-l', '--layer', type=str, default="Inner", help='layer')
-    arg_parser.add_argument('-m', '--mode', type=str, default="test", help='Train or test moce')
-    arg_parser.add_argument('-j', '--job', default="image", type=str)
+    arg_parser.add_argument('-m', '--mode', type=str, default="train", help='Train or test moce')
+    arg_parser.add_argument('-j', '--job', default="pose", type=str)
 
     args = arg_parser.parse_args()
     global SUBJECT 
     SUBJECT = int(args.subject)
     global CAMERA 
     CAMERA = int(args.camera)
-    TAKES =   [8, 9] 
+    TAKES = [1, 3, 4, 6, 7, 8, 9]
     global LAYER
     LAYER = args.layer
     global new_data_dir

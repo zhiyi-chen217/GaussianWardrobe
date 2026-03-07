@@ -11,7 +11,7 @@ import pickle
 from smplxd import SMPLX
 
 from torch import einsum
-from utils import *
+from gen_data.gen_utils import *
 
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 

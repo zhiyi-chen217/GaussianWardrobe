@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from torch import einsum
 from PIL import Image
-from gen_data.utils import *
+from gen_data.gen_utils import *
 from smplxd import SMPLX
 
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')

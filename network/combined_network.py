@@ -393,10 +393,10 @@ class CombinedAvatarNet(nn.Module):
         render_cloth_ret = render3(
             gaussian_cloth_vals,
             bg_color.repeat(2),
-            items_body['extr'],
-            items_body['intr'],
-            items_body['img_w'],
-            items_body['img_h']
+            items_cloth['extr'],
+            items_cloth['intr'],
+            items_cloth['img_w'],
+            items_cloth['img_h']
         )
         cloth_rgb_map = render_cloth_ret['render'][3:, :, :]
         label_cloth_rgb_map = render_cloth_ret['render'][:3, :, :]

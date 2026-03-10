@@ -47,17 +47,9 @@ class AvatarNet(nn.Module):
                                      .format(self.smpl_pos_map))
 
         
-        if layer == "cloth":
-            _, self.cloth_segment_mask = read_map_mask(self.data_dir + '/{}/cano_smpl_segment_map.exr'
-                                     .format(self.smpl_pos_map))
-            if model_config is None and config.opt["model"]["virtual_bone"]:
-                self.deformation_graph = DeformationGraph(config.opt["model"]["deformation_graph_network"])
-                n_virtual_bones = self.deformation_graph.deformation_graph_verts.shape[1]
-                self.weight_lbs = LBSOffsetDecoder(total_bones=(55 + n_virtual_bones))
-                # _, upper_mask = read_map_mask(self.data_dir + f'/{self.smpl_pos_map}/cano_smpl_segment_map.exr')
-                # self.loose_mask = upper_mask[self.cano_smpl_mask]
-            elif model_config is not None and model_config["virtual_bone"]:
-                self.deformation_graph = DeformationGraph(model_config["deformation_graph_network"])
+        if layer == "outer":
+            if opt["virtual_bone"]:
+                self.deformation_graph = DeformationGraph(opt["deformation_graph_network"])
                 n_virtual_bones = self.deformation_graph.deformation_graph_verts.shape[1]
                 self.weight_lbs = LBSOffsetDecoder(total_bones=(55 + n_virtual_bones))
                 # _, upper_mask = read_map_mask(self.data_dir + f'/{self.smpl_pos_map}/cano_smpl_segment_map.exr')
@@ -154,7 +146,7 @@ class AvatarNet(nn.Module):
         # exit(1)
 
     def transform_cano2live(self, gaussian_vals, items):
-        if not config.opt["model"]["virtual_bone"] or self.layer != "cloth":
+        if not self.opt["virtual_bone"] or self.layer != "outer":
             pt_mats = torch.einsum('nj,jxy->nxy', self.lbs, items['cano2live_jnt_mats'])
             gaussian_vals['positions'] = torch.einsum('nxy,ny->nx', pt_mats[..., :3, :3], gaussian_vals['positions']) + pt_mats[..., :3, 3]
             rot_mats = pytorch3d.transforms.quaternion_to_matrix(gaussian_vals['rotations'])

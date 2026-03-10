@@ -51,14 +51,14 @@ class MultiGaussianModel:
 
 
 class MultiLAvatarNet(nn.Module):
-    def __init__(self, opt, layers, data_dir=None, model_config=None):
+    def __init__(self, opt, layers, data_dir=None):
         super(MultiLAvatarNet, self).__init__()
         self.layers = layers
         self.layers_nn = nn.ModuleDict()
         self.init_points = []
         self.lbs = []
         for layer in layers:
-            self.layers_nn[layer] = AvatarNet(opt, layer, data_dir=data_dir, model_config=model_config)
+            self.layers_nn[layer] = AvatarNet(opt, layer, data_dir=data_dir)
             self.init_points.append(self.layers_nn[layer].cano_smpl_map[self.layers_nn[layer].cano_smpl_mask])
             self.lbs.append(self.layers_nn[layer].lbs)
         self.mode = config.opt["mode"]

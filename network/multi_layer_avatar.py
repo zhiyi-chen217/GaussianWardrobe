@@ -401,13 +401,13 @@ class MultiLAvatarNet(nn.Module):
         return torch.concat(colors_l, dim=0), torch.concat(color_map_l, dim=0)
     
     def get_weight_lbs(self):
-        return self.layers_nn["cloth"].get_weight_lbs()
+        return self.layers_nn["outer"].get_weight_lbs()
 
     def get_default_lbs_weights(self):
-        return self.layers_nn["cloth"].get_default_lbs_weights()
+        return self.layers_nn["outer"].get_default_lbs_weights()
 
     def get_smpl_joints_deformation(self, items):
-        return self.layers_nn["cloth"].get_smpl_joints_deformation(items)
+        return self.layers_nn["outer"].get_smpl_joints_deformation(items)
 
     def pixelwise_dominant_map_custom(self, tensor: torch.Tensor, mask, color_map=None) -> torch.Tensor:
         """

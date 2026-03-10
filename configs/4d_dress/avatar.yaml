@@ -4,9 +4,9 @@ sequence_name: smpl_params
 train:
   dataset: MvRgbDataset4DDress
   data:
-    layers: ["body", "cloth"]
-    subject_name: 185
-    data_dir: /data/zhiychen/AnimatableGaussain/train_data/multiviewRGC/4d_dress/00185/Inner
+    layers: ["body", "cloth", "outer"]
+    subject_name: 127
+    data_dir: /data/zhiychen/AnimatableGaussain/train_data/multiviewRGC/4d_dress/00127/Outer
     used_cam_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     # frame_range:
     # - 0
@@ -14,11 +14,11 @@ train:
     # - 1
     load_smpl_pos_map: true
     use_label: true
-    use_body_label: true
+    use_body_label: false
     use_normal: false
   pretrained_dir: null
-  net_ckpt_dir: /mnt/work/Clothes4D/zhiychen/results/4d_dress/00185/virtual_bone_body_loss
-  inner_ckpt_dir: null
+  net_ckpt_dir: /mnt/work/Clothes4D/zhiychen/results/4d_dress/00127/virtual_bone_outer
+  inner_ckpt_dir: /mnt/work/Clothes4D/zhiychen/results/4d_dress/00127/body_loss/epoch_latest
   prev_ckpt: null
   ckpt_interval:
     epoch: 3
@@ -39,12 +39,12 @@ train:
     body_loss: 0.5
     consistent_body_color: 0.00
     consistent_label: 0.75
-    consistent_label_body: 0.01
+    consistent_label_body: 0.0
     opacity_loss: 0.001
     normal_loss: 0.
-    inner_cloth_laplacian: 0.00
+    inner_cloth_laplacian: 0.1
     inner_cloth_loss: 0
-    outer_to_body_loss: 0
+    outer_to_body_loss: 0.5
   finetune_color: false
   batch_size: 1
   num_workers: 8
@@ -82,6 +82,24 @@ model:
   module: network.multi_layer_avatar
   network: MultiLAvatarNet
   virtual_bone: true
+  deformation_graph_network:
+    d_in: 3
+    d_out: 6
+    depth: 4
+    width: 256
+    multires: 0
+    skip_layer: []
+    cond_layer: [0]
+    dim_cond_embed: 0
+    weight_norm: True
+inner_model:
+  with_viewdirs: t
+  random_style: false
+  cover: true
+  offset_mode: original
+  module: network.multi_layer_avatar
+  network: MultiLAvatarNet
+  virtual_bone: false
   deformation_graph_network:
     d_in: 3
     d_out: 6

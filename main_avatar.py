@@ -587,7 +587,7 @@ class AvatarTrainer:
                 start_epoch = 0
                 self.iter_idx = 0
         if self.opt['train']['inner_ckpt_dir'] is not None:
-            inner_net = MultiLAvatarNet(self.opt['model'], ["body", "cloth"]).to(config.device)
+            inner_net = MultiLAvatarNet(self.opt['inner_model'], ["body", "cloth"]).to(config.device)
             self.load_ckpt_net(self.opt['train']['inner_ckpt_dir'], inner_net, False)
             self.avatar_net.layers_nn["body"] = inner_net.layers_nn["body"]
             self.avatar_net.layers_nn["cloth"] = inner_net.layers_nn["cloth"]

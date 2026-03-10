@@ -14,7 +14,7 @@ class DeformationGraph(nn.Module):
         self.deformation_graph = ImplicitNet(**opt)
         mode = config.opt["mode"]
         self.simplified_mesh = trimesh.load_mesh(os.path.join(config.opt[mode]["data"]["data_dir"], 
-                                                            config.opt.get("smpl_pos_map", "smpl_pos_map") + "_cloth", "simplified_lower.ply"))
+                                                            config.opt.get("smpl_pos_map", "smpl_pos_map") + "_outer", "simplified_outer.ply"))
         self.update_deformation_nodes(self.simplified_mesh)
 
     def update_deformation_nodes(self, simplified_mesh):

@@ -54,6 +54,10 @@ class AvatarNet(nn.Module):
                 self.weight_lbs = LBSOffsetDecoder(total_bones=(55 + n_virtual_bones))
                 # _, upper_mask = read_map_mask(self.data_dir + f'/{self.smpl_pos_map}/cano_smpl_segment_map.exr')
                 # self.loose_mask = upper_mask[self.cano_smpl_mask]
+                
+        if layer == "cloth":
+            _, self.cloth_segment_mask = read_map_mask(self.data_dir + '/{}/cano_smpl_segment_map.exr'
+                                     .format(self.smpl_pos_map))
         
         if layer =="body":
             _, self.smpl_body_mask = read_map_mask(self.data_dir + '/{}/cano_smpl_smplx_fix_offset_map.exr'.format(self.smpl_pos_map))
